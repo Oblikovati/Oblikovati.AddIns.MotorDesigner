@@ -86,16 +86,25 @@ In the host the add-in shows a **"Motor Designer"** dockable window on activatio
 
 ## Status
 
+**Live-confirmed**: the add-in loads in the running Oblikovati host and is drivable over the
+MCP bridge — `execute_command MotorDesigner.Generate` produces a "Motor" part with 12
+parameters, 2 sketches, and 2 extruded bodies (stator + rotor).
+
 | Area | State |
 |------|-------|
 | Rough sizing engine (stator/rotor/magnet) | ✅ working, tested |
 | Winding-factor analysis | ✅ working, tested |
 | Magnet + steel catalogs (FEMM-ready) | ✅ working |
+| C-ABI load without deadlocking the head | ✅ working (Setup + Generate run off the session goroutine) |
+| `MotorDesigner.Generate` command (MCP-drivable) | ✅ working, live-confirmed |
 | Dockable design-options window | ✅ working (read-only labels + Generate button) |
-| Host geometry: stator + rotor outlines | ✅ working (annular extrudes) |
-| Editable panel fields | ⏳ stubbed — panel renders inputs as labels; editing arrives when the panel control set grows fields |
-| Per-tooth slots + per-pole magnets | ⏳ next increment (current pass is annular rings) |
+| Host geometry: stator + rotor bodies | ✅ working (12-param program + 2 extrudes) |
+| Parametric sketch binding | ⏳ literals today — blocked on [Oblikovati.API#187](https://github.com/Oblikovati/Oblikovati.API/issues/187) |
+| Editable panel fields | ⏳ stubbed — host panel vocabulary has no input controls yet |
+| Per-tooth slots + per-pole magnets | ⏳ next increment (current pass is concentric rings) |
 | FEMM cross-section export | ⏳ the `Design` record is export-shaped; the bridge wiring is future work |
+
+See **[REMAINING-WORK.md](REMAINING-WORK.md)** for the detailed backlog and the live-test recipe.
 
 ## License
 
