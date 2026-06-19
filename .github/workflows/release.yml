@@ -1,0 +1,166 @@
+name: Release
+
+# The single add-in release pipeline. Hourly (and on demand) it tracks the latest
+# PUBLISHED oblikovati.org/api release and, when the add-in has not shipped for it yet:
+#   1. builds the c-shared add-in for every OS,
+#   2. publishes a GitHub release (tag `api-<version>`), and
+#   3. commits the bumped go.mod pin back to the default branch, so the repo always
+#      reflects the API release the add-in is built against.
+# It is idempotent: a run for an API release that already shipped is a no-op.
+on:
+  schedule:
+    - cron: "0 * * * *" # top of every hour
+  workflow_dispatch:
+    inputs:
+      api_ref:
+        description: "API release to build against (tag/sha; default: the latest published release)"
+        required: false
+        default: ""
+
+# Least privilege: permissions are granted per job (none at the workflow level), so only
+# the publish/sync jobs can write.
+
+# One release at a time (the sync job pushes to the default branch).
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Resolve the API release to track and decide whether the add-in needs building.
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      api_tag: ${{ steps.decide.outputs.api_tag }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE: ${{ github.event.inputs.api_ref }}
+        run: |
+          set -euo pipefail
+          api_tag="$OVERRIDE"
+          if [ -z "$api_tag" ]; then
+            api_tag=$(gh release view -R Oblikovati/Oblikovati.API --json tagName -q .tagName)
+          fi
+          if [ -z "$api_tag" ]; then
+            echo "no oblikovati.org/api release found" >&2
+            exit 1
+          fi
+          tag="api-$api_tag" # the add-in release is named for the API release it tracks
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "motor-designer already shipped for API $api_tag ($tag) — nothing to do."
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "API released $api_tag — building motor-designer $tag."
+          fi
+          echo "api_tag=$api_tag" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # Build the c-shared add-in per OS against that API release.
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/siblings
+        with:
+          api-ref: ${{ needs.check.outputs.api_tag }}
+      - name: Build c-shared library
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Windows) ext=dll; plat=windows-amd64 ;;
+            macOS)   ext=dylib; plat=darwin-$(uname -m) ;;
+            *)       ext=so; plat=linux-amd64 ;;
+          esac
+          mkdir -p dist
+          go build -buildmode=c-shared -o "dist/oblikovati-motor-designer-$plat.$ext" .
+          cp manifest.json dist/manifest.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: motor-designer-${{ matrix.os }}
+          path: dist/*
+
+  # Cut the add-in GitHub release for this API version.
+  publish:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+          API_TAG: ${{ needs.check.outputs.api_tag }}
+        run: |
+          gh release create "$TAG" dist/* \
+            -R "$GITHUB_REPOSITORY" \
+            --title "Motor Designer — API $API_TAG" \
+            --notes "Auto-built oblikovati-motor-designer against oblikovati.org/api $API_TAG. Artifacts: c-shared library per OS + manifest.json."
+
+  # Commit the bumped pin back, so the repo matches what shipped.
+  sync:
+    needs: [check, build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/siblings
+        with:
+          api-ref: ${{ needs.check.outputs.api_tag }}
+      - name: Pin go.mod to the API release
+        env:
+          API_TAG: ${{ needs.check.outputs.api_tag }}
+        run: |
+          set -euo pipefail
+          go mod edit -require "oblikovati.org/api@$API_TAG"
+          go mod tidy
+          # The replaces are CI-only; never commit them.
+          go mod edit -dropreplace oblikovati.org/api -dropreplace oblikovati.org
+      - name: Commit if changed
+        env:
+          API_TAG: ${{ needs.check.outputs.api_tag }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- go.mod go.sum; then
+            echo "repo already tracks API $API_TAG — nothing to commit."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add go.mod go.sum
+          git commit -m "chore: motor-designer tracks oblikovati.org/api $API_TAG [skip ci]"
+          git push origin "HEAD:$BRANCH"

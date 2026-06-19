@@ -16,16 +16,24 @@
 coverage.*
 *.coverprofile
 profile.cov
+test-results-*.xml
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# Go workspace file
+# Go workspace file (local-dev only: resolves the sibling Oblikovati/Oblikovati.API
+# checkouts; CI injects the equivalent `go mod edit -replace` instead).
 go.work
 go.work.sum
 
 # env file
 .env
+
+# The c-shared library build output (Makefile writes here).
+/build/
+
+# C ABI header vendored from the oblikovati.org/api module by `make sync-header`.
+/include/
 
 # Editor/IDE
 # .idea/
