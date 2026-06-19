@@ -1,0 +1,17 @@
+{
+  "id": "com.oblikovati.motor-designer",
+  "displayName": "Oblikovati Motor Designer",
+  "version": "0.69.0",
+  "description": "Parametrically designs rough (~20% accuracy) electric-motor cross-sections — stator slots/teeth/yoke, rotor poles/back-iron, surface/interior permanent magnets — from a handful of requirement inputs, exposes the design options in a dockable window, and drives the host (parameters + sketches + features) to generate the first-pass 3D geometry for downstream FEMM magnetostatic optimization.",
+  "capabilities": [
+    "commands",
+    "documents",
+    "parameters",
+    "model",
+    "sketch",
+    "features",
+    "body",
+    "materials",
+    "dockableWindows"
+  ]
+}
