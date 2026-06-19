@@ -13,8 +13,13 @@ import (
 const PanelID = "com.oblikovati.motor-designer.panel"
 
 // GenerateCommandID is the command the panel's Generate button names; the host reports
-// the click as an ordinary command-ended event the engine handles in Notify.
+// the click as an ordinary command-ended event the engine handles in Notify. It generates
+// the current spec (inrunner by default).
 const GenerateCommandID = "MotorDesigner.Generate"
+
+// GenerateOutrunnerCommandID generates the current spec as an OUTRUNNER (rotor ring outside
+// the stator), without needing panel inputs — drivable headlessly for testing both layouts.
+const GenerateOutrunnerCommandID = "MotorDesigner.GenerateOutrunner"
 
 // ShowPanel creates (or replaces) the design-options dockable window, seeded from a Spec
 // and the cross-section it computes. Inputs are rendered as labels (the panel vocabulary
@@ -63,6 +68,7 @@ func inputControls(s Spec) []wire.PanelControlSpec {
 		label("bg", fmt.Sprintf("Airgap B: %.2f T", s.AirgapB)),
 		label("mag", fmt.Sprintf("Magnet: %s, %.1f mm, arc %.2f", s.MagnetGrade, s.MagnetMM, s.MagnetArc)),
 		label("steel", fmt.Sprintf("Steel: %s", s.SteelGrade)),
+		label("type", fmt.Sprintf("Type: %s", s.normType())),
 		label("topo", fmt.Sprintf("Topology: %s", s.Topology)),
 	}
 }

@@ -131,7 +131,24 @@ func TestGenerateRejectsInvalidSpecBeforeHostCalls(t *testing.T) {
 	}
 }
 
-func TestGeneratePropagatesHostError(t *testing.T) {
+func TestGenerateOutrunnerBuildsAssembly(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	s := DefaultSpec()
+	s.Type = Outrunner
+	res, err := e.Generate(s)
+	if err != nil {
+		t.Fatalf("Generate(outrunner): %v", err)
+	}
+	if got := h.docTypeCount("part"); got != 3 {
+		t.Errorf("outrunner part documents = %d, want 3", got)
+	}
+	if res.MagnetBodies != s.Poles {
+		t.Errorf("outrunner magnet bodies = %d, want %d", res.MagnetBodies, s.Poles)
+	}
+}
+
+func TestPropagatesHostError(t *testing.T) {
 	h := &fakeHost{failOn: wire.MethodDocumentsCreate}
 	e := NewEngine(h)
 	if _, err := e.Generate(DefaultSpec()); err == nil {

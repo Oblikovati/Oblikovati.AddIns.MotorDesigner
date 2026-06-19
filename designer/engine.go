@@ -44,11 +44,19 @@ func (e *Engine) API() *client.Client { return e.api }
 // command.started event the engine's Notify turns into a Generate run. This is what makes
 // the add-in drivable headlessly (no panel click needed).
 func (e *Engine) RegisterCommands() error {
-	_, err := e.api.Commands().Create(wire.CreateCommandArgs{
+	if _, err := e.api.Commands().Create(wire.CreateCommandArgs{
 		ID:          GenerateCommandID,
 		DisplayName: "Generate Motor",
 		Category:    "Motor Designer",
-		Tooltip:     "Generate the rough motor cross-section from the current design.",
+		Tooltip:     "Generate the rough motor cross-section from the current design (inrunner).",
+	}); err != nil {
+		return err
+	}
+	_, err := e.api.Commands().Create(wire.CreateCommandArgs{
+		ID:          GenerateOutrunnerCommandID,
+		DisplayName: "Generate Outrunner Motor",
+		Category:    "Motor Designer",
+		Tooltip:     "Generate the rough motor cross-section as an outrunner (rotor ring outside the stator).",
 	})
 	return err
 }
@@ -102,15 +110,21 @@ func (e *Engine) Notify(ev []byte) {
 	if json.Unmarshal(ev, &hdr) != nil {
 		return
 	}
-	if hdr.Type == wire.EventCommandStarted && hdr.Command == GenerateCommandID {
-		e.runGenerate()
+	if hdr.Type != wire.EventCommandStarted {
+		return
+	}
+	switch hdr.Command {
+	case GenerateCommandID:
+		e.runGenerate(Inrunner)
+	case GenerateOutrunnerCommandID:
+		e.runGenerate(Outrunner)
 	}
 }
 
 // runGenerate launches a generation pass on its own goroutine (never the session
-// goroutine — see Notify). The generating flag coalesces overlapping command triggers so
-// at most one run is in flight.
-func (e *Engine) runGenerate() {
+// goroutine — see Notify), for the given motor type. The generating flag coalesces
+// overlapping command triggers so at most one run is in flight.
+func (e *Engine) runGenerate(mt MotorType) {
 	e.mu.Lock()
 	if e.generating {
 		e.mu.Unlock()
@@ -118,6 +132,7 @@ func (e *Engine) runGenerate() {
 	}
 	e.generating = true
 	spec := e.spec
+	spec.Type = mt
 	e.mu.Unlock()
 
 	go func() {

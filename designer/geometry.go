@@ -100,7 +100,7 @@ func (e *Engine) buildStatorPart(d *Design, cs CrossSection, res *GenerateResult
 	if err := e.addClosedPolyline(sk.SketchIndex, cs.StatorOuter); err != nil {
 		return 0, fmt.Errorf("stator outer: %w", err)
 	}
-	if err := e.addCircleCM(sk.SketchIndex, cs.BoreRadiusCM); err != nil {
+	if err := e.addClosedPolyline(sk.SketchIndex, cs.StatorBore); err != nil {
 		return 0, fmt.Errorf("stator bore: %w", err)
 	}
 	if res.StatorBodies, err = e.extrudeNamed(sk.SketchIndex, 0, mm(d.StackLength), "Stator Iron"); err != nil {
@@ -120,11 +120,11 @@ func (e *Engine) buildRotorPart(d *Design, cs CrossSection, res *GenerateResult)
 	if err != nil {
 		return 0, fmt.Errorf("rotor sketch: %w", err)
 	}
-	if err := e.addCircleCM(sk.SketchIndex, cs.RotorOuterRadius); err != nil {
+	if err := e.addClosedPolyline(sk.SketchIndex, cs.RotorOuter); err != nil {
 		return 0, fmt.Errorf("rotor outer: %w", err)
 	}
-	if err := e.addCircleCM(sk.SketchIndex, cs.ShaftRadiusCM); err != nil {
-		return 0, fmt.Errorf("shaft bore: %w", err)
+	if err := e.addClosedPolyline(sk.SketchIndex, cs.RotorInner); err != nil {
+		return 0, fmt.Errorf("rotor inner: %w", err)
 	}
 	if res.RotorBodies, err = e.extrudeNamed(sk.SketchIndex, 0, mm(d.StackLength), "Rotor Iron"); err != nil {
 		return 0, fmt.Errorf("rotor extrude: %w", err)
@@ -206,13 +206,6 @@ func (e *Engine) assignPartMaterial(materialID string) error {
 
 // mm formats a millimetre value as a host unit expression, e.g. mm(23.335) -> "23.3350 mm".
 func mm(v float64) string { return fmt.Sprintf("%.4f mm", v) }
-
-// addCircleCM adds an origin-centered circle whose radius is a centimetre value, emitted as
-// a unit-bearing millimetre expression (the host parses the radius via Units().Parse).
-func (e *Engine) addCircleCM(sketchIndex int, radiusCM float64) error {
-	_, err := e.api.Sketch().AddCircleByCenterRadius(sketchIndex, []float64{0, 0}, mm(radiusCM*10), false)
-	return err
-}
 
 // addClosedPolyline adds one closed polyline (a clean closed profile) from cm points.
 func (e *Engine) addClosedPolyline(sketchIndex int, loop []Point2) error {

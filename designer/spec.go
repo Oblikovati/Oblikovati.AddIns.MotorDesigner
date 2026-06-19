@@ -14,6 +14,18 @@ const (
 	InteriorPM RotorTopology = "ipm"
 )
 
+// MotorType selects the radial arrangement of rotor vs stator.
+type MotorType string
+
+const (
+	// Inrunner: the rotor spins INSIDE the stator (the common servo layout). The stator
+	// teeth point INWARD toward the bore; magnets sit on the rotor's outer surface.
+	Inrunner MotorType = "inrunner"
+	// Outrunner: the rotor is an OUTER ring spinning AROUND the stator (hub/gimbal motors).
+	// The stator teeth point OUTWARD; magnets line the inside of the outer rotor ring.
+	Outrunner MotorType = "outrunner"
+)
+
 // Spec is the small set of requirement + electromagnetic-loading inputs that drive a
 // rough motor design. Lengths are in millimetres, torque in N*m, speed in rpm — the
 // units a designer thinks in. It mirrors the controllable subset of motor-calculator's
@@ -37,6 +49,7 @@ type Spec struct {
 	MagnetMM    float64 // magnet radial thickness h_m [mm]
 	MagnetArc   float64 // magnet pole-arc fraction alpha_m [-] (0..1)
 	Topology    RotorTopology
+	Type        MotorType // inrunner (rotor inside) or outrunner (rotor outside)
 	MagnetGrade MagnetGrade
 	SteelGrade  SteelGrade
 }
@@ -59,9 +72,19 @@ func DefaultSpec() Spec {
 		MagnetMM:    3.5,
 		MagnetArc:   0.83,
 		Topology:    SurfacePM,
+		Type:        Inrunner,
 		MagnetGrade: MagnetN42,
 		SteelGrade:  SteelM270,
 	}
+}
+
+// normType returns the spec's motor type, defaulting an unset value to Inrunner so a
+// zero-value Spec (and existing callers) keep the common layout.
+func (s Spec) normType() MotorType {
+	if s.Type == Outrunner {
+		return Outrunner
+	}
+	return Inrunner
 }
 
 // Validate rejects inputs that would produce degenerate geometry, naming the offending

@@ -2,10 +2,7 @@
 
 package designer
 
-import (
-	"math"
-	"strconv"
-)
+import "strconv"
 
 // FEMMRegion is one magnetostatics region of the motor cross-section: a named closed
 // boundary loop (millimetres, axis-relative) plus the magnetic material the FEMM solver
@@ -45,8 +42,8 @@ func BuildFEMMDescriptor(d *Design) FEMMDescriptor {
 		StackLengthMM: d.StackLength, AirgapMM: d.Spec.AirgapMM,
 		StatorOuterDia: d.StatorOuterDia,
 	}
-	desc.Regions = append(desc.Regions, ironRegion("Stator", cs.StatorOuter, d))
-	desc.Regions = append(desc.Regions, ironRegion("Rotor", rotorIronLoop(cs), d))
+	desc.Regions = append(desc.Regions, ironRegion("Stator", cs.StatorBore, d))
+	desc.Regions = append(desc.Regions, ironRegion("Rotor", cs.RotorOuter, d))
 	desc.Regions = append(desc.Regions, magnetRegions(cs, d)...)
 	return desc
 }
@@ -57,13 +54,6 @@ func ironRegion(name string, loopCM []Point2, d *Design) FEMMRegion {
 		Name: name, Material: HostSteelMaterialID(d.Spec.SteelGrade),
 		Loop: loopToMM(loopCM), MuR: softIronMuR,
 	}
-}
-
-// rotorIronLoop samples the rotor back-iron annulus outer circle as a closed loop (cm). The
-// shaft bore is the region's inner hole; for the descriptor's single-boundary form we carry
-// the outer boundary (the FEMM bridge sections the body's full boundary including the bore).
-func rotorIronLoop(cs CrossSection) []Point2 {
-	return circleLoop(cs.RotorOuterRadius)
 }
 
 // magnetRegions builds one FEMM region per magnet pole, with the magnet grade's Br/Hc/μr and
@@ -96,22 +86,7 @@ func loopToMM(loopCM []Point2) [][2]float64 {
 	return out
 }
 
-// circleLoop samples a full circle of radius r (cm) into rotorCircleSteps points (a closed
-// loop) for the descriptor's rotor outer boundary.
-func circleLoop(r float64) []Point2 {
-	pts := make([]Point2, 0, rotorCircleSteps)
-	for i := 0; i < rotorCircleSteps; i++ {
-		a := 2 * math.Pi * float64(i) / float64(rotorCircleSteps)
-		pts = append(pts, Point2{X: r * math.Cos(a), Y: r * math.Sin(a)})
-	}
-	return pts
-}
-
-const (
-	// softIronMuR is the representative linear-region permeability the rough FEMM study uses
-	// for the laminated iron (the host material carries the full nonlinear figure; this is
-	// the closed-form approximation the descriptor publishes). M270-class electrical steel.
-	softIronMuR = 4000.0
-	// rotorCircleSteps facets the rotor outer circle in the descriptor.
-	rotorCircleSteps = 48
-)
+// softIronMuR is the representative linear-region permeability the rough FEMM study uses for
+// the laminated iron (the host material carries the full nonlinear figure; this is the
+// closed-form approximation the descriptor publishes). M270-class electrical steel.
+const softIronMuR = 4000.0
