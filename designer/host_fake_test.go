@@ -4,9 +4,11 @@ package designer
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
+	"oblikovati.org/api/types"
 	"oblikovati.org/api/wire"
 )
 
@@ -24,6 +26,7 @@ type fakeHost struct {
 	assigned   []string                   // material ids assigned (model.assignMaterial)
 	placed     []string                   // occurrence names placed (assembly.place)
 	statusText []string                   // status.setText messages, in order
+	attrs      map[string]string          // "<doc>/<set>/<name>" -> string value (attributes.set)
 	docTypes   []string                   // every created document's type, in order
 	features   int                        // features.add calls
 	failOn     string                     // method to fail (error-path tests); "" = none
@@ -75,6 +78,10 @@ func (h *fakeHost) dispatch(method string, req []byte) ([]byte, error) {
 		return h.recordPlace(req)
 	case wire.MethodStatusSetText:
 		return h.recordStatus(req)
+	case wire.MethodAttributesSet:
+		return h.setAttr(req)
+	case wire.MethodAttributesGet:
+		return h.getAttr(req)
 	default:
 		return []byte("{}"), nil // dockableWindows.set etc. return no body the engine reads
 	}
@@ -150,6 +157,39 @@ func (h *fakeHost) recordPlace(req []byte) ([]byte, error) {
 	}
 	h.placed = append(h.placed, a.Name)
 	return json.Marshal(wire.OccurrenceResult{})
+}
+
+func (h *fakeHost) setAttr(req []byte) ([]byte, error) {
+	var a wire.SetAttributeArgs
+	if err := json.Unmarshal(req, &a); err != nil {
+		return nil, err
+	}
+	if h.attrs == nil {
+		h.attrs = map[string]string{}
+	}
+	val, _ := a.Value.Str()
+	h.attrs[attrKey(a.Document, a.Set, a.Name)] = val
+	return json.Marshal(wire.AttributeResult{Attribute: wire.AttributeInfo{Set: a.Set, Name: a.Name, Value: a.Value}, Found: true})
+}
+
+func (h *fakeHost) getAttr(req []byte) ([]byte, error) {
+	var a wire.GetAttributeArgs
+	if err := json.Unmarshal(req, &a); err != nil {
+		return nil, err
+	}
+	val, ok := h.attrs[attrKey(a.Document, a.Set, a.Name)]
+	if !ok {
+		// Mirror the router: an absent attribute still serializes a valid (empty-string)
+		// variant so the typed client decodes the reply; Found=false is the signal.
+		empty := wire.AttributeInfo{Value: types.StringVariant("")}
+		return json.Marshal(wire.AttributeResult{Attribute: empty, Found: false})
+	}
+	info := wire.AttributeInfo{Set: a.Set, Name: a.Name, Value: types.StringVariant(val)}
+	return json.Marshal(wire.AttributeResult{Attribute: info, Found: true})
+}
+
+func attrKey(doc uint64, set, name string) string {
+	return fmt.Sprintf("%d/%s/%s", doc, set, name)
 }
 
 func (h *fakeHost) recordStatus(req []byte) ([]byte, error) {

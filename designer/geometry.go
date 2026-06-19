@@ -66,7 +66,12 @@ func (e *Engine) Generate(s Spec) (*GenerateResult, error) {
 	if err := e.buildComponents(d, cs, res); err != nil {
 		return nil, err
 	}
-	return res, e.assembleMotor(res)
+	if err := e.assembleMotor(res); err != nil {
+		return nil, err
+	}
+	// Stamp the design onto the assembly so a re-opened motor is recognisable and
+	// rebuildable from its own stored Spec (LoadSpec / IsMotorAssembly).
+	return res, e.saveSpec(res.AssemblyID, s)
 }
 
 // buildComponents creates and fills the three component part documents.
