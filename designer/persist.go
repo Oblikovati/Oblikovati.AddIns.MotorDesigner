@@ -14,8 +14,28 @@ import (
 // so the add-in can recognise an opened design and rebuild/adjust it from the stored Spec.
 const MotorSpecSet = "com.oblikovati.motor-designer"
 
-// specAttr is the attribute name under MotorSpecSet holding the JSON-serialized Spec.
+// specAttr is the attribute name under MotorSpecSet holding the JSON-serialized Spec (the full
+// design, stamped on the assembly — the form repopulates from it when the assembly is opened).
 const specAttr = "spec"
+
+// memberAttr marks EVERY document the add-in generated (parts + assembly), so a regenerate can
+// find and close the whole previous motor instead of colliding on its document names.
+const memberAttr = "member"
+
+// markMotorMember stamps the member marker on a generated document.
+func (e *Engine) markMotorMember(documentID uint64) error {
+	_, err := e.api.Attributes().Set(documentID, MotorSpecSet, memberAttr, types.StringVariant("1"))
+	return err
+}
+
+// isMotorMember reports whether a document carries the motor-member marker (part or assembly).
+func (e *Engine) isMotorMember(documentID uint64) (bool, error) {
+	res, err := e.api.Attributes().Get(documentID, MotorSpecSet, memberAttr)
+	if err != nil {
+		return false, err
+	}
+	return res.Found, nil
+}
 
 // saveSpec stamps the design Spec onto a document as a JSON attribute, so re-opening the
 // assembly later (or another add-in session) can recover the exact inputs that built it.

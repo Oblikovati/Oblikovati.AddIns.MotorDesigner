@@ -104,21 +104,80 @@ func (e *Engine) SetSpec(s Spec) {
 // failed generation is visible to the user rather than silently producing nothing.
 func (e *Engine) Notify(ev []byte) {
 	var hdr struct {
-		Type    string `json:"type"`
-		Command string `json:"command"`
+		Type string `json:"type"`
 	}
 	if json.Unmarshal(ev, &hdr) != nil {
 		return
 	}
-	if hdr.Type != wire.EventCommandStarted {
+	switch hdr.Type {
+	case wire.EventCommandStarted:
+		e.handleCommand(ev)
+	case wire.EventPanelValueChanged:
+		e.handlePanelEdit(ev)
+	case wire.EventDocumentActivated:
+		// Loading/activating a motor assembly repopulates the form from its stored Spec. This
+		// needs host calls (read attributes + re-show the panel), which deadlock on the session
+		// goroutine, so it runs on its own goroutine.
+		go e.handleDocumentActivated(ev)
+	}
+}
+
+// handleDocumentActivated repopulates the design form when the activated document is a motor
+// assembly the add-in stamped: it reads the Spec back from the assembly's attribute set and
+// re-shows the panel seeded with those values. Activations during our own generation are
+// ignored (the assembly carries no Spec yet, and the guard avoids reentrancy).
+func (e *Engine) handleDocumentActivated(ev []byte) {
+	var a struct {
+		ID uint64 `json:"id"`
+	}
+	if json.Unmarshal(ev, &a) != nil {
 		return
 	}
-	switch hdr.Command {
+	e.mu.Lock()
+	generating := e.generating
+	e.mu.Unlock()
+	if generating {
+		return
+	}
+	spec, ok, err := e.LoadSpec(a.ID)
+	if err != nil || !ok {
+		return
+	}
+	e.SetSpec(spec)
+	_, _ = e.ShowPanel(spec)
+}
+
+// handleCommand runs the generation command (the panel's Generate button or the MCP
+// execute_command), for the current spec.
+func (e *Engine) handleCommand(ev []byte) {
+	var c struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(ev, &c) != nil {
+		return
+	}
+	switch c.Command {
 	case GenerateCommandID:
 		e.runGenerate(Inrunner)
 	case GenerateOutrunnerCommandID:
 		e.runGenerate(Outrunner)
 	}
+}
+
+// handlePanelEdit writes one edited form field back into the spec. This only mutates the spec
+// (no host call), so it is safe on the session goroutine; the next Generate uses the new value.
+func (e *Engine) handlePanelEdit(ev []byte) {
+	var p struct {
+		WindowId  string `json:"windowId"`
+		ControlId string `json:"controlId"`
+		Value     string `json:"value"`
+	}
+	if json.Unmarshal(ev, &p) != nil || p.WindowId != PanelID {
+		return
+	}
+	e.mu.Lock()
+	applyControl(&e.spec, p.ControlId, p.Value)
+	e.mu.Unlock()
 }
 
 // runGenerate launches a generation pass on its own goroutine (never the session
