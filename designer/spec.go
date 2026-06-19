@@ -48,6 +48,7 @@ type Spec struct {
 	AirgapMM    float64 // mechanical airgap [mm]
 	MagnetMM    float64 // magnet radial thickness h_m [mm]
 	MagnetArc   float64 // magnet pole-arc fraction alpha_m [-] (0..1)
+	GlueGapMM   float64 // magnet↔rotor bond line [mm] (FEMM magnet/iron separation)
 	Topology    RotorTopology
 	Type        MotorType // inrunner (rotor inside) or outrunner (rotor outside)
 	MagnetGrade MagnetGrade
@@ -71,6 +72,7 @@ func DefaultSpec() Spec {
 		AirgapMM:    0.7,
 		MagnetMM:    3.5,
 		MagnetArc:   0.83,
+		GlueGapMM:   0.05,
 		Topology:    SurfacePM,
 		Type:        Inrunner,
 		MagnetGrade: MagnetN42,
