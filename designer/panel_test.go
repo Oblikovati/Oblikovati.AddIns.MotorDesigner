@@ -141,6 +141,8 @@ func TestSetupRegistersCommandAndShowsPanel(t *testing.T) {
 }
 
 func sawCall(h *fakeHost, method string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	for _, m := range h.calls {
 		if m == method {
 			return true
@@ -204,6 +206,8 @@ func TestNotifyIgnoresUnrelatedEvents(t *testing.T) {
 }
 
 func lastCall(h *fakeHost) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if len(h.calls) == 0 {
 		return ""
 	}

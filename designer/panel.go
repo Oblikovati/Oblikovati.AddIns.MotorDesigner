@@ -104,42 +104,32 @@ var (
 	}
 )
 
+// specSetters maps a form control ID to the function that writes its edited value into the Spec.
+// A table keeps applyControl flat (one lookup) instead of a long switch.
+var specSetters = map[string]func(*Spec, string){
+	"type":         func(s *Spec, v string) { s.Type = MotorType(v) },
+	"torque":       func(s *Spec, v string) { s.TorqueNm = parseNum(v, s.TorqueNm) },
+	"speed":        func(s *Spec, v string) { s.SpeedRPM = parseNum(v, s.SpeedRPM) },
+	"poles":        func(s *Spec, v string) { s.Poles = int(parseNum(v, float64(s.Poles))) },
+	"slots":        func(s *Spec, v string) { s.Slots = int(parseNum(v, float64(s.Slots))) },
+	"airgap_b":     func(s *Spec, v string) { s.AirgapB = parseNum(v, s.AirgapB) },
+	"tooth_b":      func(s *Spec, v string) { s.ToothB = parseNum(v, s.ToothB) },
+	"yoke_b":       func(s *Spec, v string) { s.YokeB = parseNum(v, s.YokeB) },
+	"magnet_grade": func(s *Spec, v string) { s.MagnetGrade = MagnetGrade(v) },
+	"magnet_mm":    func(s *Spec, v string) { s.MagnetMM = parseNum(v, s.MagnetMM) },
+	"magnet_arc":   func(s *Spec, v string) { s.MagnetArc = parseNum(v, s.MagnetArc) },
+	"airgap":       func(s *Spec, v string) { s.AirgapMM = parseNum(v, s.AirgapMM) },
+	"steel_grade":  func(s *Spec, v string) { s.SteelGrade = SteelGrade(v) },
+	"slot_type":    func(s *Spec, v string) { s.SlotType = SlotType(v) },
+	"slot_open":    func(s *Spec, v string) { s.SlotOpeningMM = parseNum(v, s.SlotOpeningMM) },
+	"tooth_tip":    func(s *Spec, v string) { s.ToothTipHeightMM = parseNum(v, s.ToothTipHeightMM) },
+}
+
 // applyControl writes one edited form value back into the Spec, keyed by the control ID. Unknown
 // ids and unparseable numbers are ignored (the field keeps its previous value).
 func applyControl(s *Spec, id, value string) {
-	switch id {
-	case "type":
-		s.Type = MotorType(value)
-	case "torque":
-		s.TorqueNm = parseNum(value, s.TorqueNm)
-	case "speed":
-		s.SpeedRPM = parseNum(value, s.SpeedRPM)
-	case "poles":
-		s.Poles = int(parseNum(value, float64(s.Poles)))
-	case "slots":
-		s.Slots = int(parseNum(value, float64(s.Slots)))
-	case "airgap_b":
-		s.AirgapB = parseNum(value, s.AirgapB)
-	case "tooth_b":
-		s.ToothB = parseNum(value, s.ToothB)
-	case "yoke_b":
-		s.YokeB = parseNum(value, s.YokeB)
-	case "magnet_grade":
-		s.MagnetGrade = MagnetGrade(value)
-	case "magnet_mm":
-		s.MagnetMM = parseNum(value, s.MagnetMM)
-	case "magnet_arc":
-		s.MagnetArc = parseNum(value, s.MagnetArc)
-	case "airgap":
-		s.AirgapMM = parseNum(value, s.AirgapMM)
-	case "steel_grade":
-		s.SteelGrade = SteelGrade(value)
-	case "slot_type":
-		s.SlotType = SlotType(value)
-	case "slot_open":
-		s.SlotOpeningMM = parseNum(value, s.SlotOpeningMM)
-	case "tooth_tip":
-		s.ToothTipHeightMM = parseNum(value, s.ToothTipHeightMM)
+	if set, ok := specSetters[id]; ok {
+		set(s, value)
 	}
 }
 
