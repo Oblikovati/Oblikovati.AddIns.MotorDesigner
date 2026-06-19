@@ -161,6 +161,8 @@ jobs:
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add go.mod go.sum
+          # go.sum is absent when the add-in has no transitive deps beyond the API.
+          git add go.mod
+          [ -f go.sum ] && git add go.sum || true
           git commit -m "chore: motor-designer tracks oblikovati.org/api $API_TAG [skip ci]"
           git push origin "HEAD:$BRANCH"
