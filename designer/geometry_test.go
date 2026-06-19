@@ -27,8 +27,8 @@ func TestGenerateDrivesFullHostSequence(t *testing.T) {
 	if len(h.entities) != 4 {
 		t.Errorf("sketch entities = %d, want 4 (two circles per annulus)", len(h.entities))
 	}
-	if res.StatorFeature == 0 || res.RotorFeature == 0 {
-		t.Errorf("feature ids not captured: stator=%d rotor=%d", res.StatorFeature, res.RotorFeature)
+	if res.StatorBodies != 1 || res.RotorBodies != 1 {
+		t.Errorf("extrudes should each produce a body: stator=%d rotor=%d", res.StatorBodies, res.RotorBodies)
 	}
 	if res.DocumentID == 0 {
 		t.Errorf("document id not captured")
@@ -57,23 +57,29 @@ func TestGeneratePublishesParametricProgram(t *testing.T) {
 	}
 }
 
-func TestGenerateUsesParameterDrivenRadii(t *testing.T) {
+func TestGenerateEmitsLiteralRadiusExpressions(t *testing.T) {
 	h := &fakeHost{}
 	e := NewEngine(h)
+	d, _ := Compute(DefaultSpec())
 	if _, err := e.Generate(DefaultSpec()); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	// The stator outer circle radius must be the parameter name, not a literal — proving
-	// the geometry is parameter-driven (DOF-0 intent), so editing the parameter re-drives
-	// the model.
-	var sawStatorOuter bool
+	// The host's sketch.addEntity radius is a LITERAL unit expression (it does not resolve
+	// parameter names — see the Generate doc + GAP-NOTE). The stator outer circle must
+	// carry the computed millimetre value, "<stator OD/2> mm".
+	wantStatorOuter := mm(d.StatorOuterDia / 2)
+	var sawIt bool
 	for _, ent := range h.entities {
-		if ent.Radius == "stator_outer_r" {
-			sawStatorOuter = true
+		if ent.Radius == wantStatorOuter {
+			sawIt = true
+		}
+		// Must never be a bare parameter name (the bug that produced empty geometry live).
+		if ent.Radius == "stator_outer_r" || ent.Radius == "bore_r" {
+			t.Errorf("circle radius is a parameter name %q; the host cannot parse it", ent.Radius)
 		}
 	}
-	if !sawStatorOuter {
-		t.Errorf("no circle bound to parameter stator_outer_r; entities=%+v", h.entities)
+	if !sawIt {
+		t.Errorf("no circle with literal stator-outer radius %q; entities=%+v", wantStatorOuter, h.entities)
 	}
 }
 

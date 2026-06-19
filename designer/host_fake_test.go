@@ -4,6 +4,8 @@ package designer
 
 import (
 	"encoding/json"
+	"sync"
+	"time"
 
 	"oblikovati.org/api/wire"
 )
@@ -11,8 +13,10 @@ import (
 // fakeHost is a named fake HostCaller (no live host): it answers the wire methods a
 // design-generation run issues with canned JSON and records the methods + sketch-entity
 // requests it saw, so a test can assert the full document→parameters→sketch→feature call
-// sequence ran. It is the single mock for this package's host I/O (no inline stubs).
+// sequence ran. It is the single mock for this package's host I/O (no inline stubs). It is
+// mutex-guarded because Notify dispatches generation onto its own goroutine.
 type fakeHost struct {
+	mu       sync.Mutex
 	calls    []string                   // every method name, in order
 	entities []wire.AddSketchEntityArgs // sketch.addEntity requests, decoded
 	params   []wire.ParameterSetArgs    // parameters.add/set requests, decoded
@@ -22,10 +26,11 @@ type fakeHost struct {
 	failOn   string                     // method to fail (error-path tests); "" = none
 	existing []wire.ParameterInfo       // parameters.list reply
 	nextDoc  uint64                     // id stamped on the next documents.create reply
-	nextFeat uint64                     // id stamped on the next features.add reply
 }
 
 func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.calls = append(h.calls, method)
 	if method == h.failOn {
 		return nil, errFake
@@ -35,6 +40,11 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 		h.docs++
 		h.nextDoc++
 		return json.Marshal(wire.DocumentInfo{ID: h.nextDoc, Type: "part", Active: true})
+	case wire.MethodDocumentsList:
+		// The active document is the one Generate just created (id = nextDoc).
+		return json.Marshal(wire.ListDocumentsResult{
+			Documents: []wire.DocumentInfo{{ID: h.nextDoc, Type: "part", Active: true}},
+		})
 	case wire.MethodParametersList:
 		return json.Marshal(wire.ListParametersResult{Parameters: h.existing})
 	case wire.MethodParametersAdd, wire.MethodParametersSet:
@@ -46,10 +56,8 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 		return h.recordEntity(req)
 	case wire.MethodFeaturesAdd:
 		h.features++
-		h.nextFeat++
-		return json.Marshal(struct {
-			FeatureID uint64 `json:"featureId"`
-		}{FeatureID: h.nextFeat})
+		// Mirror the host's real extrude reply (no numeric feature id; bodies + healthy).
+		return json.Marshal(extrudeResult{Feature: "Extrusion", Bodies: 1, Healthy: true})
 	default:
 		return []byte("{}"), nil // dockableWindows.set etc. return no body the engine reads
 	}
@@ -71,6 +79,32 @@ func (h *fakeHost) recordEntity(req []byte) ([]byte, error) {
 	}
 	h.entities = append(h.entities, a)
 	return json.Marshal(wire.AddSketchEntityResult{})
+}
+
+// docCount returns the documents.create count under the lock.
+func (h *fakeHost) docCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.docs
+}
+
+// callCount returns how many host calls were made under the lock.
+func (h *fakeHost) callCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.calls)
+}
+
+// waitForDocs spins (up to ~2s) until at least n documents have been created — used to
+// join the async generation goroutine Notify spawns.
+func (h *fakeHost) waitForDocs(n int) bool {
+	for i := 0; i < 200; i++ {
+		if h.docCount() >= n {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 // errFake is the canned failure the fake returns for failOn.

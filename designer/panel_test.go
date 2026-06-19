@@ -5,6 +5,7 @@ package designer
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"oblikovati.org/api/types"
 	"oblikovati.org/api/wire"
@@ -53,13 +54,48 @@ func TestPanelControlsReflectSpecAndResults(t *testing.T) {
 	}
 }
 
+func TestRegisterCommandsCreatesGenerateCommand(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	if err := e.RegisterCommands(); err != nil {
+		t.Fatalf("RegisterCommands: %v", err)
+	}
+	if got := lastCall(h); got != wire.MethodCommandsCreate {
+		t.Errorf("last call = %q, want %q", got, wire.MethodCommandsCreate)
+	}
+}
+
+func TestSetupRegistersCommandAndShowsPanel(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	if err := e.Setup(); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	// Setup must register the command AND set the dockable window — both, in order.
+	if !sawCall(h, wire.MethodCommandsCreate) {
+		t.Errorf("Setup did not register the Generate command")
+	}
+	if !sawCall(h, wire.MethodDockableWindowsSet) {
+		t.Errorf("Setup did not show the dockable panel")
+	}
+}
+
+func sawCall(h *fakeHost, method string) bool {
+	for _, m := range h.calls {
+		if m == method {
+			return true
+		}
+	}
+	return false
+}
+
 func TestNotifyGenerateCommandTriggersGeneration(t *testing.T) {
 	h := &fakeHost{}
 	e := NewEngine(h)
 	ev := []byte(`{"type":"` + wire.EventCommandStarted + `","command":"` + GenerateCommandID + `"}`)
-	e.Notify(ev)
-	if h.docs != 1 {
-		t.Errorf("Generate command should have created a document; docs=%d", h.docs)
+	e.Notify(ev) // dispatches generation onto its own goroutine (never the caller's)
+	if !h.waitForDocs(1) {
+		t.Errorf("Generate command should have created a document; docs=%d", h.docCount())
 	}
 }
 
@@ -68,8 +104,9 @@ func TestNotifyIgnoresUnrelatedEvents(t *testing.T) {
 	e := NewEngine(h)
 	e.Notify([]byte(`{"type":"selection.changed","count":3}`))
 	e.Notify([]byte(`not json`))
-	if len(h.calls) != 0 {
-		t.Errorf("unrelated events must not drive the host, saw %v", h.calls)
+	time.Sleep(50 * time.Millisecond) // let any (erroneously) spawned goroutine run
+	if n := h.callCount(); n != 0 {
+		t.Errorf("unrelated events must not drive the host, saw %d calls", n)
 	}
 }
 

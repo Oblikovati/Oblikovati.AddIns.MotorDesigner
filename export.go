@@ -60,10 +60,16 @@ func ObkAddInActivate(call C.ObkHostCall, freeFn C.ObkHostFree) C.int {
 		return C.OBK_OK
 	}
 	hostCall, hostFree = call, freeFn
-	engine = designer.NewEngine(cgoHostCaller{})
-	// Surface the design-options panel on activation; ignore the error so a panel the
-	// host can't render yet never blocks the add-in from loading.
-	_, _ = engine.ShowPanel(engine.Spec())
+	eng := designer.NewEngine(cgoHostCaller{})
+	engine = eng
+	// IMPORTANT: make NO host calls on THIS goroutine. Activation runs on the host's
+	// session goroutine BEFORE the frame loop starts; a host call blocks until the frame
+	// loop drains the dispatcher, so calling the host here deadlocks the head (a black,
+	// unrendered window). Run the one-time setup (register command + show panel) on a
+	// separate goroutine, where the now-running frame loop drains its host calls — the
+	// same pattern the MCP bridge uses to serve its HTTP handlers off the session
+	// goroutine.
+	go func() { _ = eng.Setup() }()
 	return C.OBK_OK
 }
 
