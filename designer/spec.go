@@ -26,6 +26,22 @@ const (
 	Outrunner MotorType = "outrunner"
 )
 
+// SlotType selects the stator slot cross-section profile (motor-design literature shapes).
+type SlotType string
+
+const (
+	// SlotParallelTooth is the semi-closed slot with constant-width (parallel-sided) teeth,
+	// tooth shoes/tips, a narrow slot opening and a round bottom — the standard PMSM/BLDC slot
+	// (e.g. Pyrhönen, "Design of Rotating Electrical Machines", §4; FEMM/Motor-CAD default).
+	SlotParallelTooth SlotType = "parallel-tooth"
+	// SlotOpenRectangular is a fully open, parallel-sided slot (no shoe), used in large or
+	// form-wound machines — simplest to wind, highest slot-opening flux ripple.
+	SlotOpenRectangular SlotType = "open-rectangular"
+	// SlotRoundBottom is a semi-closed pear/teardrop slot: shoe + radial tooth sides widening
+	// to a large rounded bottom, common in small induction and some PM machines.
+	SlotRoundBottom SlotType = "round-bottom"
+)
+
 // Spec is the small set of requirement + electromagnetic-loading inputs that drive a
 // rough motor design. Lengths are in millimetres, torque in N*m, speed in rpm — the
 // units a designer thinks in. It mirrors the controllable subset of motor-calculator's
@@ -53,6 +69,11 @@ type Spec struct {
 	Type        MotorType // inrunner (rotor inside) or outrunner (rotor outside)
 	MagnetGrade MagnetGrade
 	SteelGrade  SteelGrade
+
+	// Stator slot geometry (literature profile + its semi-closed-slot dimensions).
+	SlotType         SlotType // slot cross-section profile
+	SlotOpeningMM    float64  // slot opening width b_s0 at the airgap [mm]
+	ToothTipHeightMM float64  // tooth shoe (tip) radial height h_s0+h_s1 [mm]
 }
 
 // DefaultSpec is a sane mid-size servo-motor starting point: ~1.6 N*m, 3000 rpm,
@@ -77,7 +98,38 @@ func DefaultSpec() Spec {
 		Type:        Inrunner,
 		MagnetGrade: MagnetN42,
 		SteelGrade:  SteelM270,
+
+		SlotType:         SlotParallelTooth,
+		SlotOpeningMM:    2.0,
+		ToothTipHeightMM: 1.5,
 	}
+}
+
+// normSlotType returns the spec's slot profile, defaulting an unset value to the
+// parallel-tooth slot so a zero-value Spec keeps a realistic semi-closed slot.
+func (s Spec) normSlotType() SlotType {
+	switch s.SlotType {
+	case SlotOpenRectangular, SlotRoundBottom:
+		return s.SlotType
+	default:
+		return SlotParallelTooth
+	}
+}
+
+// slotOpeningMM / toothTipHeightMM return the semi-closed-slot dimensions with literature
+// defaults when the spec leaves them unset (a zero-value Spec stays valid).
+func (s Spec) slotOpeningMM() float64 {
+	if s.SlotOpeningMM > 0 {
+		return s.SlotOpeningMM
+	}
+	return 2.0
+}
+
+func (s Spec) toothTipHeightMM() float64 {
+	if s.ToothTipHeightMM > 0 {
+		return s.ToothTipHeightMM
+	}
+	return 1.5
 }
 
 // normType returns the spec's motor type, defaulting an unset value to Inrunner so a

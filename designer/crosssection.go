@@ -60,7 +60,7 @@ func BuildCrossSection(d *Design) CrossSection {
 	l := resolveLayout(d)
 	return CrossSection{
 		StatorOuter: l.statorOuterLoop(),
-		StatorBore:  l.statorInnerLoop(d.Spec.Slots),
+		StatorBore:  l.statorInnerLoop(d),
 		RotorOuter:  circleLoopCM(l.rotorOuterR()),
 		RotorInner:  circleLoopCM(l.rotorInnerR()),
 		Magnets:     magnetLoops(d, l),
@@ -128,22 +128,6 @@ func outrunnerLayout(d *Design) layout {
 // airgap): the OD for an inrunner, the shaft-side ID for an outrunner.
 func (l layout) statorOuterLoop() []Point2 {
 	return circleLoopCM(l.statorYokeR)
-}
-
-// statorInnerLoop is the stator iron's TOOTHED airgap boundary. Both members alternate a
-// tooth-tip arc (at the airgap) and a slot-bottom arc (set back into the yoke) around the
-// axis — the teeth always point at the airgap, inward for an inrunner, outward for an
-// outrunner. (For an outrunner this is the OUTER boundary, but the loop topology is identical.)
-func (l layout) statorInnerLoop(slots int) []Point2 {
-	step := 2 * math.Pi / float64(slots)
-	var loop []Point2
-	for i := 0; i < slots; i++ {
-		c := float64(i) * step
-		half := l.toothFrac * step / 2
-		loop = append(loop, arcPoints(l.toothTipR, c-half, c+half)...)
-		loop = append(loop, arcPoints(l.slotBottomR, c+half, c+step-half)...)
-	}
-	return loop
 }
 
 // rotorOuterR/rotorInnerR are the rotor iron's smooth boundary radii. Inrunner: outer =
