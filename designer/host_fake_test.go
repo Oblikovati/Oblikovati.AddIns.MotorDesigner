@@ -19,22 +19,23 @@ import (
 // It is the single mock for this package's host I/O (no inline stubs), mutex-guarded
 // because Notify dispatches generation onto its own goroutine.
 type fakeHost struct {
-	mu         sync.Mutex
-	calls      []string                   // every method name, in order
-	entities   []wire.AddSketchEntityArgs // sketch.addEntity requests, decoded
-	params     []wire.ParameterSetArgs    // parameters.add/set requests, decoded
-	assigned   []string                   // material ids assigned (model.assignMaterial)
-	placed     []string                   // occurrence names placed (assembly.place)
-	statusText []string                   // status.setText messages, in order
-	attrs      map[string]string          // "<doc>/<set>/<name>" -> string value (attributes.set)
-	docTypes   []string                   // every created document's type, in order
-	features   int                        // features.add calls
-	failOn     string                     // method to fail (error-path tests); "" = none
-	existing   []wire.ParameterInfo       // parameters.list reply
-	nextDoc    uint64                     // id stamped on the next documents.create reply
-	featSeq    uint64                     // running feature-id sequence (model.tree)
-	sketchByID map[uint64]int             // sketch count per active doc (for sketch indices)
-	activeDoc  uint64                     // currently active document id
+	mu          sync.Mutex
+	calls       []string                   // every method name, in order
+	entities    []wire.AddSketchEntityArgs // sketch.addEntity requests, decoded
+	params      []wire.ParameterSetArgs    // parameters.add/set requests, decoded
+	assigned    []string                   // material ids assigned (model.assignMaterial)
+	placed      []string                   // occurrence names placed (assembly.place)
+	statusText  []string                   // status.setText messages, in order
+	attrs       map[string]string          // "<doc>/<set>/<name>" -> string value (attributes.set)
+	docTypes    []string                   // every created document's type, in order
+	features    int                        // features.add calls
+	failOn      string                     // method to fail (error-path tests); "" = none
+	existing    []wire.ParameterInfo       // parameters.list reply
+	nextDoc     uint64                     // id stamped on the next documents.create reply
+	featSeq     uint64                     // running feature-id sequence (model.tree)
+	sketchByID  map[uint64]int             // sketch count per active doc (for sketch indices)
+	bodiesByDoc map[uint64]int             // cumulative body count per doc (mirrors the host's extrude reply)
+	activeDoc   uint64                     // currently active document id
 }
 
 func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
@@ -119,8 +120,14 @@ func (h *fakeHost) createSketch() ([]byte, error) {
 func (h *fakeHost) addFeature() ([]byte, error) {
 	h.features++
 	h.featSeq++
-	// Mirror the host's real extrude reply (no numeric feature id; bodies + healthy).
-	return json.Marshal(extrudeResult{Feature: "Extrusion", Bodies: 1, Healthy: true})
+	// Mirror the host's real extrude reply: Bodies is the part's TOTAL body count after the
+	// feature (len(SurfaceBodies)), NOT the one body just added — so a caller that sums these
+	// over-counts (the magnet 1+2+…+N bug). Track a cumulative count per active document.
+	if h.bodiesByDoc == nil {
+		h.bodiesByDoc = map[uint64]int{}
+	}
+	h.bodiesByDoc[h.activeDoc]++
+	return json.Marshal(extrudeResult{Feature: "Extrusion", Bodies: h.bodiesByDoc[h.activeDoc], Healthy: true})
 }
 
 func (h *fakeHost) recordParam(req []byte) ([]byte, error) {

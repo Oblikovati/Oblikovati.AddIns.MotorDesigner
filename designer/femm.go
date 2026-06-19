@@ -3,9 +3,30 @@
 package designer
 
 import (
+	"encoding/json"
 	"math"
+	"os"
+	"path/filepath"
 	"strconv"
 )
+
+// MotorDescriptorHandoffPath is the cross-add-in hand-off file: Generate writes the FEMM motor
+// descriptor here, and the FEMM add-in reads it on its RunStudy command. Both add-ins run in
+// the host process, so a well-known temp file is the simplest contract until a document-attribute
+// channel exists. The FEMM bridge mirrors this path.
+func MotorDescriptorHandoffPath() string {
+	return filepath.Join(os.TempDir(), "oblikovati-femm-motor-descriptor.json")
+}
+
+// publishFEMMDescriptor writes the sized motor's FEMM descriptor to the hand-off file so the
+// FEMM magnetics add-in can solve and tint the very motor that was just generated.
+func publishFEMMDescriptor(d *Design) error {
+	b, err := json.MarshalIndent(BuildFEMMDescriptor(d), "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(MotorDescriptorHandoffPath(), b, 0o600)
+}
 
 // FEMMRegion is one solid region of the motor cross-section, in the exact shape the
 // FEMM bridge's MotorDescriptor consumes (millimetres, axis-relative): all boundary
