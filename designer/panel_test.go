@@ -99,6 +99,39 @@ func TestNotifyGenerateCommandTriggersGeneration(t *testing.T) {
 	}
 }
 
+func TestNotifySurfacesGenerateSuccessOnStatusBar(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	e.Notify([]byte(`{"type":"` + wire.EventCommandStarted + `","command":"` + GenerateCommandID + `"}`))
+	if !h.waitForDocs(4) { // 3 parts + 1 assembly
+		t.Fatalf("generation did not complete; docs=%d", h.docCount())
+	}
+	waitForStatus(h)
+	if msg := h.lastStatus(); !strings.Contains(msg, "generated") {
+		t.Errorf("status should report success, got %q", msg)
+	}
+}
+
+func TestNotifySurfacesGenerateFailureOnStatusBar(t *testing.T) {
+	h := &fakeHost{failOn: wire.MethodDocumentsCreate}
+	e := NewEngine(h)
+	e.Notify([]byte(`{"type":"` + wire.EventCommandStarted + `","command":"` + GenerateCommandID + `"}`))
+	waitForStatus(h)
+	if msg := h.lastStatus(); !strings.Contains(msg, "failed") {
+		t.Errorf("status should report the failure, got %q", msg)
+	}
+}
+
+// waitForStatus spins (up to ~2s) until a status.setText message has been recorded.
+func waitForStatus(h *fakeHost) {
+	for i := 0; i < 200; i++ {
+		if h.lastStatus() != "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestNotifyIgnoresUnrelatedEvents(t *testing.T) {
 	h := &fakeHost{}
 	e := NewEngine(h)

@@ -4,6 +4,7 @@ package designer
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 
 	"oblikovati.org/api/client"
@@ -91,8 +92,8 @@ func (e *Engine) SetSpec(s Spec) {
 // therefore dispatched to a SEPARATE goroutine, where the live frame loop drains its host
 // calls normally. A guard coalesces overlapping triggers so one run is in flight at a time.
 //
-// Errors are swallowed: an add-in must never crash the host on a bad event (the panel is
-// the surface for reporting them in a later phase).
+// A run's outcome is surfaced on the host status bar (success or the error message), so a
+// failed generation is visible to the user rather than silently producing nothing.
 func (e *Engine) Notify(ev []byte) {
 	var hdr struct {
 		Type    string `json:"type"`
@@ -120,9 +121,23 @@ func (e *Engine) runGenerate() {
 	e.mu.Unlock()
 
 	go func() {
-		_, _ = e.Generate(spec)
+		e.reportOutcome(e.Generate(spec))
 		e.mu.Lock()
 		e.generating = false
 		e.mu.Unlock()
 	}()
+}
+
+// reportOutcome surfaces a Generate run's result on the host status bar — a one-line
+// summary on success, the error message on failure — so a bad design is visible rather
+// than silently producing nothing. Status updates are best-effort (a status failure must
+// not mask the original outcome).
+func (e *Engine) reportOutcome(res *GenerateResult, err error) {
+	if err != nil {
+		_, _ = e.api.Status().SetText("Motor Designer: generation failed — " + err.Error())
+		return
+	}
+	msg := fmt.Sprintf("Motor Designer: generated %d magnets, stator + rotor (%s iron, %s magnets)",
+		res.MagnetBodies, res.IronMaterial, res.MagnetMatID)
+	_, _ = e.api.Status().SetText(msg)
 }
