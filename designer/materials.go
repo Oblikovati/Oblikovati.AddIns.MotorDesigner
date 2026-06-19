@@ -83,6 +83,45 @@ func recoilMuR(brT, hcjKAm float64) float64 {
 	return brT / (mu0 * hcjKAm * 1000)
 }
 
+// hostMagnetID maps a designer magnet grade to the host material catalog id (the built-in
+// permanent-magnet entries added in 07-magnetic.yaml), so the generated magnet bodies can be
+// assigned a real host material the FEMM bridge reads. Unmapped grades fall back to N42.
+var hostMagnetID = map[MagnetGrade]string{
+	MagnetN35:     "magnet-ndfeb-n35",
+	MagnetN42:     "magnet-ndfeb-n42",
+	MagnetN42SH:   "magnet-ndfeb-n42", // SH is a temperature variant of N42's Br/Hc class
+	MagnetN52:     "magnet-ndfeb-n52",
+	MagnetFerrite: "magnet-ferrite-y30",
+	MagnetSmCo:    "magnet-smco-2-17",
+}
+
+// hostSteelID maps a designer steel grade to the host electrical-steel catalog id. The
+// designer's M-grades (loss class) map to the nearest host lamination grade; unmapped grades
+// fall back to M270.
+var hostSteelID = map[SteelGrade]string{
+	SteelM235:    "electrical-steel-m270",
+	SteelM270:    "electrical-steel-m270",
+	SteelM330:    "electrical-steel-m400",
+	SteelM400:    "electrical-steel-m400",
+	SteelHiperCo: "cobalt-iron-vacoflux",
+}
+
+// HostMagnetMaterialID returns the host catalog material id for a magnet grade (N42 default).
+func HostMagnetMaterialID(g MagnetGrade) string {
+	if id, ok := hostMagnetID[g]; ok {
+		return id
+	}
+	return "magnet-ndfeb-n42"
+}
+
+// HostSteelMaterialID returns the host catalog material id for a steel grade (M270 default).
+func HostSteelMaterialID(g SteelGrade) string {
+	if id, ok := hostSteelID[g]; ok {
+		return id
+	}
+	return "electrical-steel-m270"
+}
+
 // Magnet returns the catalog data for a grade, or false if the grade is unknown.
 func Magnet(g MagnetGrade) (MagnetData, bool) {
 	d, ok := magnetCatalog[g]

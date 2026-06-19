@@ -8,30 +8,71 @@ import (
 	"oblikovati.org/api/wire"
 )
 
-func TestGenerateDrivesFullHostSequence(t *testing.T) {
+func TestGenerateBuildsAssemblyOfThreeParts(t *testing.T) {
 	h := &fakeHost{}
 	e := NewEngine(h)
 	res, err := e.Generate(DefaultSpec())
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if h.docs != 1 {
-		t.Errorf("documents.create calls = %d, want 1", h.docs)
+	if got := h.docTypeCount("part"); got != 3 {
+		t.Errorf("part documents = %d, want 3 (stator + rotor + magnets)", got)
 	}
-	if h.sketches != 2 {
-		t.Errorf("sketch.create calls = %d, want 2 (stator + rotor)", h.sketches)
-	}
-	if h.features != 2 {
-		t.Errorf("features.add calls = %d, want 2 (two extrudes)", h.features)
-	}
-	if len(h.entities) != 4 {
-		t.Errorf("sketch entities = %d, want 4 (two circles per annulus)", len(h.entities))
+	if got := h.docTypeCount("assembly"); got != 1 {
+		t.Errorf("assembly documents = %d, want 1 (Motor)", got)
 	}
 	if res.StatorBodies != 1 || res.RotorBodies != 1 {
-		t.Errorf("extrudes should each produce a body: stator=%d rotor=%d", res.StatorBodies, res.RotorBodies)
+		t.Errorf("stator/rotor each want 1 body: stator=%d rotor=%d", res.StatorBodies, res.RotorBodies)
 	}
-	if res.DocumentID == 0 {
-		t.Errorf("document id not captured")
+	if res.MagnetBodies != DefaultSpec().Poles {
+		t.Errorf("magnet bodies = %d, want %d (one per pole)", res.MagnetBodies, DefaultSpec().Poles)
+	}
+	if res.AssemblyID == 0 || res.StatorDocID == 0 {
+		t.Errorf("document ids not captured: %+v", res)
+	}
+}
+
+func TestGeneratePlacesEveryComponentInAssembly(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	if _, err := e.Generate(DefaultSpec()); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	want := map[string]bool{"Stator": false, "Rotor": false, "Magnets": false}
+	for _, name := range h.placed {
+		if _, tracked := want[name]; tracked {
+			want[name] = true
+		}
+	}
+	for name, placed := range want {
+		if !placed {
+			t.Errorf("component %q was not placed in the assembly (placed=%v)", name, h.placed)
+		}
+	}
+}
+
+func TestGenerateAssignsMagneticMaterials(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	res, err := e.Generate(DefaultSpec())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	// Iron is assigned to two parts (stator + rotor), the magnet grade to one (magnets).
+	iron, magnet := 0, 0
+	for _, id := range h.assigned {
+		switch id {
+		case res.IronMaterial:
+			iron++
+		case res.MagnetMatID:
+			magnet++
+		}
+	}
+	if iron != 2 {
+		t.Errorf("iron material %q assigned %d times, want 2 (stator+rotor); assigned=%v", res.IronMaterial, iron, h.assigned)
+	}
+	if magnet != 1 {
+		t.Errorf("magnet material %q assigned %d times, want 1; assigned=%v", res.MagnetMatID, magnet, h.assigned)
 	}
 }
 
@@ -57,67 +98,23 @@ func TestGeneratePublishesParametricProgram(t *testing.T) {
 	}
 }
 
-func TestGenerateEmitsLiteralRadiusExpressions(t *testing.T) {
+func TestGenerateEmitsToothedStatorBoundary(t *testing.T) {
 	h := &fakeHost{}
 	e := NewEngine(h)
 	d, _ := Compute(DefaultSpec())
 	if _, err := e.Generate(DefaultSpec()); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	// The host's sketch.addEntity radius is a LITERAL unit expression (it does not resolve
-	// parameter names — see the Generate doc + GAP-NOTE). The stator outer circle must
-	// carry the computed millimetre value, "<stator OD/2> mm".
-	wantStatorOuter := mm(d.StatorOuterDia / 2)
-	var sawIt bool
+	// The stator outer boundary is a single closed polyline with many points (toothed), not
+	// a plain circle — the central improvement over the old concentric-rings cross-section.
+	var sawToothedLoop bool
 	for _, ent := range h.entities {
-		if ent.Radius == wantStatorOuter {
-			sawIt = true
-		}
-		// Must never be a bare parameter name (the bug that produced empty geometry live).
-		if ent.Radius == "stator_outer_r" || ent.Radius == "bore_r" {
-			t.Errorf("circle radius is a parameter name %q; the host cannot parse it", ent.Radius)
+		if ent.Kind == "polyline" && ent.Closed && len(ent.Points) >= d.Spec.Slots*2 {
+			sawToothedLoop = true
 		}
 	}
-	if !sawIt {
-		t.Errorf("no circle with literal stator-outer radius %q; entities=%+v", wantStatorOuter, h.entities)
-	}
-}
-
-func TestGenerateUpsertsExistingParameters(t *testing.T) {
-	// A part that already carries bore_dia should be Set, not Add (idempotent re-run).
-	h := &fakeHost{existing: []wire.ParameterInfo{{Name: "bore_dia"}}}
-	e := NewEngine(h)
-	if _, err := e.Generate(DefaultSpec()); err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	var sawSet bool
-	for i, m := range h.calls {
-		if m == wire.MethodParametersSet && h.params[paramIndexAt(h, i)].Name == "bore_dia" {
-			sawSet = true
-		}
-	}
-	if !sawSet {
-		t.Errorf("existing bore_dia should be Set, not Add")
-	}
-}
-
-// paramIndexAt maps a call index to its position in h.params by counting add/set calls
-// up to (and including) that point.
-func paramIndexAt(h *fakeHost, callIdx int) int {
-	n := -1
-	for i := 0; i <= callIdx; i++ {
-		if h.calls[i] == wire.MethodParametersAdd || h.calls[i] == wire.MethodParametersSet {
-			n++
-		}
-	}
-	return n
-}
-
-func TestGeneratePropagatesHostError(t *testing.T) {
-	h := &fakeHost{failOn: wire.MethodDocumentsCreate}
-	e := NewEngine(h)
-	if _, err := e.Generate(DefaultSpec()); err == nil {
-		t.Errorf("Generate should propagate a documents.create failure")
+	if !sawToothedLoop {
+		t.Errorf("no toothed stator polyline (>= %d points) found among entities", d.Spec.Slots*2)
 	}
 }
 
@@ -131,5 +128,13 @@ func TestGenerateRejectsInvalidSpecBeforeHostCalls(t *testing.T) {
 	}
 	if len(h.calls) != 0 {
 		t.Errorf("no host calls should be made for an invalid spec, saw %v", h.calls)
+	}
+}
+
+func TestGeneratePropagatesHostError(t *testing.T) {
+	h := &fakeHost{failOn: wire.MethodDocumentsCreate}
+	e := NewEngine(h)
+	if _, err := e.Generate(DefaultSpec()); err == nil {
+		t.Errorf("Generate should propagate a documents.create failure")
 	}
 }
