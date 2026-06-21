@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Oblikovati Motor Designer">
+  <rect width="64" height="64" rx="12" fill="#1f2430"/>
+  <!-- stator ring with teeth and a rotor hub -->
+  <circle cx="32" cy="32" r="20" fill="none" stroke="#c8cdd8" stroke-width="4"/>
+  <g fill="#8893a5">
+    <rect x="30" y="8" width="4" height="8"/><rect x="30" y="48" width="4" height="8"/>
+    <rect x="8" y="30" width="8" height="4"/><rect x="48" y="30" width="8" height="4"/>
+  </g>
+  <circle cx="32" cy="32" r="9" fill="#7c5cff"/>
+  <rect x="30" y="23" width="4" height="18" fill="#3ddc97"/>
+</svg>
