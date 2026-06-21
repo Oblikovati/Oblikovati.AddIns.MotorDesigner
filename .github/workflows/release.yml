@@ -75,7 +75,8 @@ jobs:
       fail-fast: false
       matrix:
         # Native runner per platform so the host gets a binary for its OS+arch (#1164).
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-13, macos-14, windows-latest]
+        # darwin-amd64 is cross-built on the macos-14 (arm64) runner, so no Intel runner (#1164).
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: "1"
@@ -89,34 +90,35 @@ jobs:
       - uses: ./.github/actions/siblings
         with:
           api-ref: ${{ needs.check.outputs.api_tag }}
-      - name: Build c-shared library
-        run: |
-          set -euo pipefail
-          arch=$(uname -m)
-          case "$arch" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac
-          case "$RUNNER_OS" in
-            Windows) ext=dll; os=windows ;;
-            macOS)   ext=dylib; os=darwin ;;
-            *)       ext=so;  os=linux ;;
-          esac
-          plat="$os-$arch"
-          mkdir -p dist
-          go build -buildmode=c-shared -o "dist/oblikovati-motor-designer-$plat.$ext" .
-          cp manifest.json dist/manifest.json
-          echo "PLAT=$plat" >> "$GITHUB_ENV"
-          echo "LIB=dist/oblikovati-motor-designer-$plat.$ext" >> "$GITHUB_ENV"
-      - name: Publish bundle to the add-in catalogue
-        # Only when the publish token is configured; api major.minor from the tracked API release.
-        if: ${{ env.ADDINS_PUBLISH_TOKEN != '' }}
+      - name: Build and publish per-platform bundles
+        # macOS builds BOTH arches — darwin-amd64 is cross-compiled on the arm64 runner (the
+        # macOS toolchain is universal), so Intel Macs are covered without the slow Intel
+        # runner. Each bundle publishes when ADDINS_PUBLISH_TOKEN is set; api major.minor from
+        # the tracked API release (api-vX.Y.Z -> X.Y).
+        shell: bash
         env:
           ADDINS_PUBLISH_URL: ${{ secrets.ADDINS_PUBLISH_URL }}
           API_TAG: ${{ needs.check.outputs.api_tag }}
         run: |
           set -euo pipefail
-          api="${API_TAG#v}"
-          api="${api%.*}"
-          scripts/publish-catalogue.sh "$PLAT" "$LIB" "$api"
-      - uses: actions/upload-artifact@v6
+          case "$RUNNER_OS" in
+            Windows) ext=dll;   targets="windows-amd64" ;;
+            macOS)   ext=dylib; targets="darwin-arm64 darwin-amd64" ;;
+            *)
+              ext=so; a=$(uname -m)
+              case "$a" in x86_64|amd64) a=amd64 ;; aarch64|arm64) a=arm64 ;; esac
+              targets="linux-$a" ;;
+          esac
+          api="${API_TAG#v}"; api="${api%.*}"
+          mkdir -p dist
+          for plat in $targets; do
+            lib="dist/oblikovati-motor-designer-$plat.$ext"
+            GOARCH="${plat##*-}" go build -buildmode=c-shared -o "$lib" .
+            if [ -n "${ADDINS_PUBLISH_TOKEN:-}" ]; then
+              scripts/publish-catalogue.sh "$plat" "$lib" "$api"
+            fi
+          done
+          cp manifest.json dist/manifest.json      - uses: actions/upload-artifact@v6
         with:
           name: motor-designer-${{ matrix.os }}
           path: dist/*
