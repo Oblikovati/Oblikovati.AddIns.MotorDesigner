@@ -118,7 +118,8 @@ jobs:
               scripts/publish-catalogue.sh "$plat" "$lib" "$api"
             fi
           done
-          cp manifest.json dist/manifest.json      - uses: actions/upload-artifact@v6
+          cp manifest.json dist/manifest.json
+      - uses: actions/upload-artifact@v6
         with:
           name: motor-designer-${{ matrix.os }}
           path: dist/*
