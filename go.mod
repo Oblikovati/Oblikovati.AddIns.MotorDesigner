@@ -19,4 +19,4 @@ module oblikovati.org/motor-designer
 
 go 1.24.0
 
-require oblikovati.org/api v0.88.0
+require oblikovati.org/api v0.89.0
