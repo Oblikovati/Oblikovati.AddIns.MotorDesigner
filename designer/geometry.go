@@ -5,6 +5,7 @@ package designer
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"oblikovati.org/api/types"
 	"oblikovati.org/api/wire"
@@ -24,12 +25,14 @@ type GenerateResult struct {
 	MagnetMatID   string // host material id assigned to the magnet part (magnet grade)
 }
 
-// extrudeArgs is the JSON shape the host's "extrude" feature kind expects:
-// {sketchIndex, profileIndex, distance}. The distance is a literal unit expression.
+// extrudeArgs is the JSON shape the host's "extrude" feature kind expects. Operation is the
+// boolean against existing bodies — "new" for a fresh body, "join" to fuse with the active
+// body (the tooth joining the stator yoke). Distance is a unit-bearing expression.
 type extrudeArgs struct {
 	SketchIndex  int    `json:"sketchIndex"`
 	ProfileIndex int    `json:"profileIndex"`
 	Distance     string `json:"distance"`
+	Operation    string `json:"operation"`
 }
 
 // extrudeResult is the host's extrude reply: the feature display name, the number of bodies
@@ -50,12 +53,12 @@ type extrudeResult struct {
 // grade and the magnets carry their magnet grade — distinct regions, distinct materials,
 // without needing a per-body reference key (which the API does not yet expose).
 //
-// NOTE on parameter binding: every part publishes the design's parameter program (formulas
-// of the design drivers), drives its extrude depth from stack_length, and builds its CIRCULAR
-// geometry from radius EXPRESSIONS (parametric circles, resolved through the evaluator since
-// Oblikovati.API#187). The toothed stator bore and the magnet arcs are still computed
-// polylines: expression-driven sketch LINES/ARCS (or a parametric slot-cut pattern) are an
-// open API gap, so those profiles cannot yet be fully constrained from parameters.
+// NOTE on parameter binding: every part publishes the design's parameter program (formulas of
+// the design drivers) and builds REAL, fully-constrained geometry driven by it — grounded
+// radius-dimensioned circles for the yoke/rotor annuli, and real-arc annular sectors (driving
+// radius + half-angle dimensions) for the stator tooth and the magnet, each circular-patterned
+// by a parameter-driven count. Editing a driver recomputes every part in place — no polylines,
+// no literal coordinates, no sketch recreation.
 func (e *Engine) Generate(s Spec) (*GenerateResult, error) {
 	d, err := Compute(s)
 	if err != nil {
@@ -65,12 +68,14 @@ func (e *Engine) Generate(s Spec) (*GenerateResult, error) {
 	// regenerating with edited parameters updates the design instead of colliding on the
 	// "Stator"/"Rotor"/"Magnets"/"Motor" document names.
 	e.clearExistingMotor()
-	cs := BuildCrossSection(d)
 	res := &GenerateResult{
 		IronMaterial: HostSteelMaterialID(s.SteelGrade),
 		MagnetMatID:  HostMagnetMaterialID(s.MagnetGrade),
 	}
-	if err := e.buildComponents(d, cs, res); err != nil {
+	// The geometry is laid down from the topology-resolved layout (role-based radii). The FEMM
+	// hand-off (publishFEMMDescriptor) builds its own faceted CrossSection from the Design for
+	// 2D meshing — the host sketches are now real arcs, so the two no longer share a profile.
+	if err := e.buildComponents(d, resolveLayout(d), res); err != nil {
 		return nil, err
 	}
 	if err := e.assembleMotor(res); err != nil {
@@ -85,22 +90,23 @@ func (e *Engine) Generate(s Spec) (*GenerateResult, error) {
 }
 
 // buildComponents creates and fills the three component part documents.
-func (e *Engine) buildComponents(d *Design, cs CrossSection, res *GenerateResult) error {
+func (e *Engine) buildComponents(d *Design, l layout, res *GenerateResult) error {
 	var err error
-	if res.StatorDocID, err = e.buildStatorPart(d, cs, res); err != nil {
+	if res.StatorDocID, err = e.buildStatorPart(d, l, res); err != nil {
 		return err
 	}
-	if res.RotorDocID, err = e.buildRotorPart(d, cs, res); err != nil {
+	if res.RotorDocID, err = e.buildRotorPart(d, l, res); err != nil {
 		return err
 	}
-	res.MagnetDocID, err = e.buildMagnetPart(d, cs, res)
+	res.MagnetDocID, err = e.buildMagnetPart(d, l, res)
 	return err
 }
 
-// buildStatorPart creates the "Stator" part: the toothed annulus (toothed outer boundary +
-// bore circle), extruded over the stack length, with the steel grade assigned and the
-// design parameter program published for documentation.
-func (e *Engine) buildStatorPart(d *Design, cs CrossSection, res *GenerateResult) (uint64, error) {
+// buildStatorPart creates the "Stator" part the canonical way: a smooth yoke annulus, one
+// real-arc tooth extrude-joined to it, then a circular pattern of the tooth whose count tracks
+// the slots parameter. Every dimension is parameter-driven, so editing a driver recomputes the
+// stator in place. The yoke + teeth fuse into a single iron body.
+func (e *Engine) buildStatorPart(d *Design, l layout, res *GenerateResult) (uint64, error) {
 	id, err := e.createPart("Stator")
 	if err != nil {
 		return 0, err
@@ -108,28 +114,54 @@ func (e *Engine) buildStatorPart(d *Design, cs CrossSection, res *GenerateResult
 	if res.ParametersSet, err = e.publishParameters(d); err != nil {
 		return 0, fmt.Errorf("stator parameters: %w", err)
 	}
-	sk, err := e.api.Sketch().Create(wire.CreateSketchArgs{Plane: "XY"})
-	if err != nil {
-		return 0, fmt.Errorf("stator sketch: %w", err)
+	if err := e.buildStatorYoke(); err != nil {
+		return 0, err
 	}
-	// Outer diameter is a parametric circle (driven by stator_outer_r); the bore is the
-	// toothed slot boundary (a computed profile — fully expression-driven lines/arcs are an
-	// open API gap, see geometry note).
-	if err := e.addParametricCircle(sk.SketchIndex, "stator_outer_r"); err != nil {
-		return 0, fmt.Errorf("stator outer: %w", err)
+	if err := e.buildToothPattern(d, l); err != nil {
+		return 0, err
 	}
-	if err := e.addClosedPolyline(sk.SketchIndex, cs.StatorBore); err != nil {
-		return 0, fmt.Errorf("stator bore: %w", err)
-	}
-	if res.StatorBodies, err = e.extrudeNamed(sk.SketchIndex, 0, stackLengthExpr, "Stator Iron"); err != nil {
-		return 0, fmt.Errorf("stator extrude: %w", err)
-	}
+	res.StatorBodies = 1 // yoke + patterned teeth are one fused iron body
 	return id, e.assignPartMaterial(res.IronMaterial)
 }
 
-// buildRotorPart creates the "Rotor" part: the back-iron annulus (rotor-iron OD circle +
-// shaft-bore circle), extruded, with the steel grade assigned.
-func (e *Engine) buildRotorPart(d *Design, cs CrossSection, res *GenerateResult) (uint64, error) {
+// buildStatorYoke extrudes the smooth annulus between the stator yoke boundary and the slot
+// bottoms (two grounded, radius-dimensioned circles).
+func (e *Engine) buildStatorYoke() error {
+	sk, err := e.api.Sketch().Create(wire.CreateSketchArgs{Plane: "XY"})
+	if err != nil {
+		return fmt.Errorf("stator yoke sketch: %w", err)
+	}
+	if err := e.addGroundedCircle(sk.SketchIndex, "stator_yoke_r"); err != nil {
+		return fmt.Errorf("stator yoke OD: %w", err)
+	}
+	if err := e.addGroundedCircle(sk.SketchIndex, "slot_bottom_r"); err != nil {
+		return fmt.Errorf("stator yoke bore: %w", err)
+	}
+	_, err = e.extrudeNamed(sk.SketchIndex, "new", "Stator Yoke")
+	return err
+}
+
+// buildToothPattern extrude-joins one real-arc tooth to the yoke and circular-patterns it
+// across the slots, so the toothed bore is real arcs (not segments) and re-patterns when the
+// slots parameter changes.
+func (e *Engine) buildToothPattern(d *Design, l layout) error {
+	sk, err := e.api.Sketch().Create(wire.CreateSketchArgs{Plane: "XY"})
+	if err != nil {
+		return fmt.Errorf("tooth sketch: %w", err)
+	}
+	if err := e.addAnnularSector(sk.SketchIndex, toothSector(l, d)); err != nil {
+		return fmt.Errorf("tooth profile: %w", err)
+	}
+	if _, err := e.extrudeNamed(sk.SketchIndex, "join", "Tooth"); err != nil {
+		return fmt.Errorf("tooth extrude: %w", err)
+	}
+	return e.patternCircular("Tooth", d.Spec.Slots, "slots")
+}
+
+// buildRotorPart creates the "Rotor" back-iron annulus from two grounded, radius-dimensioned
+// circles whose role-based radii flip with the topology, so both inrunner and outrunner rotors
+// are literal-free and recompute from the published radii.
+func (e *Engine) buildRotorPart(d *Design, l layout, res *GenerateResult) (uint64, error) {
 	id, err := e.createPart("Rotor")
 	if err != nil {
 		return 0, err
@@ -141,34 +173,22 @@ func (e *Engine) buildRotorPart(d *Design, cs CrossSection, res *GenerateResult)
 	if err != nil {
 		return 0, fmt.Errorf("rotor sketch: %w", err)
 	}
-	// The rotor back-iron annulus is fully parametric: two concentric circles driven by the
-	// published radii, extruded over stack_length. Changing magnet_inner_r / rotor_inner_r /
-	// stack_length re-sizes the part with no literal coordinates (inrunner; outrunner falls
-	// back to the computed profile until topology-specific radii are published).
-	if d.Spec.normType() == Inrunner {
-		if err := e.addParametricCircle(sk.SketchIndex, "magnet_inner_r"); err != nil {
-			return 0, fmt.Errorf("rotor outer: %w", err)
-		}
-		if err := e.addParametricCircle(sk.SketchIndex, "rotor_inner_r"); err != nil {
-			return 0, fmt.Errorf("rotor inner: %w", err)
-		}
-	} else {
-		if err := e.addClosedPolyline(sk.SketchIndex, cs.RotorOuter); err != nil {
-			return 0, fmt.Errorf("rotor outer: %w", err)
-		}
-		if err := e.addClosedPolyline(sk.SketchIndex, cs.RotorInner); err != nil {
-			return 0, fmt.Errorf("rotor inner: %w", err)
-		}
+	outer, inner := rotorRadii(l)
+	if err := e.addGroundedCircle(sk.SketchIndex, outer); err != nil {
+		return 0, fmt.Errorf("rotor outer: %w", err)
 	}
-	if res.RotorBodies, err = e.extrudeNamed(sk.SketchIndex, 0, stackLengthExpr, "Rotor Iron"); err != nil {
+	if err := e.addGroundedCircle(sk.SketchIndex, inner); err != nil {
+		return 0, fmt.Errorf("rotor inner: %w", err)
+	}
+	if res.RotorBodies, err = e.extrudeNamed(sk.SketchIndex, "new", "Rotor Iron"); err != nil {
 		return 0, fmt.Errorf("rotor extrude: %w", err)
 	}
 	return id, e.assignPartMaterial(res.IronMaterial)
 }
 
-// buildMagnetPart creates the "Magnets" part: one closed magnet loop per pole (one body
-// each), extruded, with the magnet grade assigned to the whole part.
-func (e *Engine) buildMagnetPart(d *Design, cs CrossSection, res *GenerateResult) (uint64, error) {
+// buildMagnetPart creates the "Magnets" part: one real-arc magnet sector, circular-patterned
+// across the poles (one body per pole), with the magnet grade assigned to the whole part.
+func (e *Engine) buildMagnetPart(d *Design, l layout, res *GenerateResult) (uint64, error) {
 	id, err := e.createPart("Magnets")
 	if err != nil {
 		return 0, err
@@ -180,22 +200,65 @@ func (e *Engine) buildMagnetPart(d *Design, cs CrossSection, res *GenerateResult
 	if err != nil {
 		return 0, fmt.Errorf("magnet sketch: %w", err)
 	}
-	for i, loop := range cs.Magnets {
-		if err := e.addClosedPolyline(sk.SketchIndex, loop); err != nil {
-			return 0, fmt.Errorf("magnet %d loop: %w", i+1, err)
-		}
+	if err := e.addAnnularSector(sk.SketchIndex, magnetSector(l, d)); err != nil {
+		return 0, fmt.Errorf("magnet profile: %w", err)
 	}
-	// The host's extrude reply reports the part's TOTAL body count after the feature, not the
-	// one body this extrude added — so take the final count (one magnet per pole) rather than
-	// summing the running totals (which gave the 1+2+…+N triangular over-count).
-	for i := range cs.Magnets {
-		n, err := e.extrudeNamed(sk.SketchIndex, i, stackLengthExpr, fmt.Sprintf("Magnet-%d", i+1))
-		if err != nil {
-			return 0, fmt.Errorf("magnet %d extrude: %w", i+1, err)
-		}
-		res.MagnetBodies = n
+	if _, err := e.extrudeNamed(sk.SketchIndex, "new", "Magnet"); err != nil {
+		return 0, fmt.Errorf("magnet extrude: %w", err)
 	}
+	if err := e.patternCircular("Magnet", d.Spec.Poles, "poles"); err != nil {
+		return 0, fmt.Errorf("magnet pattern: %w", err)
+	}
+	res.MagnetBodies = d.Spec.Poles // one magnet per pole after the circular pattern
 	return id, e.assignPartMaterial(res.MagnetMatID)
+}
+
+// rotorRadii returns the rotor iron's outer/inner role-based radius parameters for the
+// topology: inrunner = magnet back .. rotor yoke (shaft side); outrunner = rotor yoke (ring OD)
+// .. magnet tip (ring inner face).
+func rotorRadii(l layout) (outerParam, innerParam string) {
+	if l.teethFaceOut {
+		return "rotor_yoke_r", "magnet_tip_r"
+	}
+	return "magnet_back_r", "rotor_yoke_r"
+}
+
+// toothSector specs one stator tooth as an annular sector between the tooth tip and slot bottom,
+// spanning the tooth's angular share of a slot pitch (toothFrac · π / slots half-angle).
+func toothSector(l layout, d *Design) sector {
+	half := l.toothFrac * math.Pi / float64(d.Spec.Slots)
+	return sector{
+		rInnerSeed: l.toothTipR, rOuterSeed: l.slotBottomR, halfSeed: half,
+		rInnerParam: "tooth_tip_r", rOuterParam: "slot_bottom_r", spanParam: "tooth_angle",
+	}
+}
+
+// magnetSector specs one magnet as an annular sector between its back and tip radii, spanning
+// the pole arc (MagnetArcDeg full span; half-angle in radians seeds the placement).
+func magnetSector(l layout, d *Design) sector {
+	half := d.MagnetArcDeg * math.Pi / 360
+	return sector{
+		rInnerSeed: l.magnetBackR, rOuterSeed: l.magnetTipR, halfSeed: half,
+		rInnerParam: "magnet_back_r", rOuterParam: "magnet_tip_r", spanParam: "magnet_arc_deg",
+	}
+}
+
+// patternCircular replicates a named feature into count instances over a full turn about the
+// part axis (+Z). The literal count satisfies the host schema and seeds the fake; countExpr is
+// the parameter the live host actually uses, so the instance count tracks the parameter (#189).
+func (e *Engine) patternCircular(feature string, count int, countExpr string) error {
+	_, err := e.api.Features().PatternCircular(wire.CircularPatternFeatureArgs{
+		SourceFeatures: []string{feature},
+		Count:          count,
+		CountExpr:      countExpr,
+		Angle:          "360 deg",
+		AxisPoint:      []float64{0, 0, 0},
+		AxisDir:        []float64{0, 0, 1},
+	})
+	if err != nil {
+		return fmt.Errorf("circular pattern of %q (count %s): %w", feature, countExpr, err)
+	}
+	return nil
 }
 
 // assembleMotor creates the "Motor" assembly and places the three component parts coaxially
@@ -271,30 +334,11 @@ func (e *Engine) assignPartMaterial(materialID string) error {
 // so changing that one parameter re-extrudes the whole motor (no literal lengths in features).
 const stackLengthExpr = "stack_length"
 
-// addParametricCircle adds a circle centred on the part origin whose radius is a PARAMETER
-// EXPRESSION (e.g. "stator_outer_r", "magnet_inner_r"), so the host recomputes the geometry when
-// the parameter changes — the radius is resolved through the parameter evaluator (API#187).
-func (e *Engine) addParametricCircle(sketchIndex int, radiusExpr string) error {
-	_, err := e.api.Sketch().AddCircleByCenterRadius(sketchIndex, []float64{0, 0}, radiusExpr, false)
-	return err
-}
-
-// addClosedPolyline adds one closed polyline (a clean closed profile) from cm points.
-func (e *Engine) addClosedPolyline(sketchIndex int, loop []Point2) error {
-	pts := make([][]float64, len(loop))
-	for i, p := range loop {
-		pts[i] = []float64{p.X, p.Y}
-	}
-	_, err := e.api.Sketch().AddEntity(wire.AddSketchEntityArgs{
-		SketchIndex: sketchIndex, Kind: "polyline", Points: pts, Closed: true,
-	})
-	return err
-}
-
-// extrudeNamed extrudes one profile of a sketch by a literal distance and renames the
-// resulting feature (best-effort), returning the number of solid bodies produced.
-func (e *Engine) extrudeNamed(sketchIndex, profileIndex int, distance, name string) (int, error) {
-	n, err := e.extrude(sketchIndex, profileIndex, distance)
+// extrudeNamed extrudes a sketch's first profile over the stack length with the given boolean
+// operation ("new"/"join") and renames the resulting feature (best-effort), returning the
+// number of solid bodies produced.
+func (e *Engine) extrudeNamed(sketchIndex int, operation, name string) (int, error) {
+	n, err := e.extrude(sketchIndex, operation)
 	if err != nil {
 		return 0, err
 	}
@@ -302,10 +346,13 @@ func (e *Engine) extrudeNamed(sketchIndex, profileIndex int, distance, name stri
 	return n, nil
 }
 
-// extrude extrudes one profile by a literal unit-bearing distance and returns the solid
-// body count, failing loudly when the host reports an unhealthy or empty extrude.
-func (e *Engine) extrude(sketchIndex, profileIndex int, distance string) (int, error) {
-	args, err := json.Marshal(extrudeArgs{SketchIndex: sketchIndex, ProfileIndex: profileIndex, Distance: distance})
+// extrude extrudes a sketch's first profile over the stack length with the given boolean
+// operation and returns the solid body count, failing loudly when the host reports an
+// unhealthy or empty extrude.
+func (e *Engine) extrude(sketchIndex int, operation string) (int, error) {
+	args, err := json.Marshal(extrudeArgs{
+		SketchIndex: sketchIndex, ProfileIndex: 0, Distance: stackLengthExpr, Operation: operation,
+	})
 	if err != nil {
 		return 0, err
 	}

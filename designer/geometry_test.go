@@ -98,26 +98,6 @@ func TestGeneratePublishesParametricProgram(t *testing.T) {
 	}
 }
 
-func TestGenerateEmitsToothedStatorBoundary(t *testing.T) {
-	h := &fakeHost{}
-	e := NewEngine(h)
-	d, _ := Compute(DefaultSpec())
-	if _, err := e.Generate(DefaultSpec()); err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	// The stator outer boundary is a single closed polyline with many points (toothed), not
-	// a plain circle — the central improvement over the old concentric-rings cross-section.
-	var sawToothedLoop bool
-	for _, ent := range h.entities {
-		if ent.Kind == "polyline" && ent.Closed && len(ent.Points) >= d.Spec.Slots*2 {
-			sawToothedLoop = true
-		}
-	}
-	if !sawToothedLoop {
-		t.Errorf("no toothed stator polyline (>= %d points) found among entities", d.Spec.Slots*2)
-	}
-}
-
 func TestGenerateRejectsInvalidSpecBeforeHostCalls(t *testing.T) {
 	h := &fakeHost{}
 	e := NewEngine(h)

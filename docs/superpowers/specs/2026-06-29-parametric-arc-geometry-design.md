@@ -50,9 +50,24 @@ emit real arcs, full dimensional + geometric constraints, and parameter-driven f
   (yoke ring + one tooth feature + `PatternCircular`), because only the feature pattern carries
   a parameter-driven `CountExpr` — keeping the slot/pole *count* live as well as the dimensions.
 - **Scope:** all three parts (stator, rotor incl. outrunner, magnets) in one coherent change.
-- **CrossSection removal:** the faceting helpers are dead once geometry is arc-based; remove
-  them. Confirm in code that nothing outside sketch lay-down (notably `femm.go` /
-  `publishFEMMDescriptor`) reads `CrossSection` before deleting.
+- **CrossSection — KEPT (correction to the agreed "safe to remove").** Verifying in code per
+  the agreed safeguard showed `femm.go:publishFEMMDescriptor` *does* consume `BuildCrossSection`
+  (stator/rotor/magnet loops) to build the 2D FEMM mesh regions. FEMM is a 2D FEA mesher that
+  legitimately wants faceted polygon loops, while the host *sketch* must be real arcs — different
+  consumers, different needs. So `CrossSection` and its faceting helpers stay for FEMM; only the
+  **sketch lay-down** (`geometry.go:addClosedPolyline` and its callers) is removed.
+
+## Two host findings that shaped the implementation (both verified)
+
+1. **A parametric circle needs a driving radius DIMENSION, not a centre-radius expression.**
+   `addin/router/sketch_add_entity.go:buildCircle` resolves `radius` to a one-shot value at
+   construction and never re-binds it — so the *old* add-in's "parametric circles" were not
+   actually live either (the same M39 "verify the known path is actually read" lesson). Every
+   circle now gets `Fix(centre)` + a `Radius` dimension whose expression is the parameter.
+2. **`PointExprs` (expression-placed arcs) are one-shot too** — they give a correct initial
+   seed but do not re-evaluate on recompute. Liveness comes only from **driving dimensions**,
+   whose backing parameter stores the expression in the parameter DAG
+   (`model/sketch/dimension.go:create` → `AddModelParameter`).
 
 ## Design
 
@@ -82,6 +97,24 @@ Three features, each with its own sketch (project rule: one sketch per feature):
 For an inrunner the teeth protrude inward (`tooth_tip_r` < `slot_bottom_r`); the outrunner flips
 the radial order (teeth outward). One tooth-profile builder parameterised by the layout serves
 both, mirroring the existing inrunner/outrunner layout split.
+
+#### Annular-sector constraint topology (tooth + magnet share `addAnnularSector`) — solver-validated
+
+The DOF=0 + live-recompute topology was **derived against the real sketch solver** (a solver-less
+fake cannot verify DOF), tuned to drop a mixed over/under-constrained first attempt, and is
+locked by the host-side oracle `Oblikovati addin/router/motor_sector_solver_test.go`:
+
+- two real arcs, centres **coincident**, one centre **fixed** at the origin;
+- four corner **coincidences** welding each flank end to its arc end (the host does not
+  auto-merge coincident points, so closure is explicit);
+- both flanks made radial via **`pointOnLine(centre, flank)`**;
+- a **`vertical`** constraint on the two inner-arc ends pins the sector symmetric about +X,
+  removing rigid rotation without needing a fixed axis entity;
+- two **radius** dimensions and one **angle** dimension for the full span
+  (`magnet_arc_deg` / `tooth_angle`).
+
+Rejected first attempt: a fixed +X construction centreline + two half-angle dimensions — the
+solver reported it simultaneously over-constrained (11 redundant) and DOF=2.
 
 ### Magnets part
 

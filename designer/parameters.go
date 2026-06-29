@@ -22,7 +22,7 @@ type motorParam struct {
 // dimensions as formulas of them, so editing e.g. bore_dia in the host re-drives the
 // stator/rotor radii and the model recomputes (DOF-0 parametric intent).
 func designParameters(d *Design) []motorParam {
-	return []motorParam{
+	base := []motorParam{
 		// Mathematical constant, so the pitch formulas read naturally (defined once).
 		{"pi", "3.14159265358979"},
 
@@ -51,8 +51,47 @@ func designParameters(d *Design) []motorParam {
 		{"rotor_outer_r", "bore_r - airgap"},
 		{"magnet_inner_r", "rotor_outer_r - magnet_thick"},
 		{"rotor_inner_r", "magnet_inner_r - rotor_yoke"},
+
+		// Magnet pole-arc fraction (independent input) and the angular spans the tooth/magnet
+		// sketches dimension against. Angles carry deg so they stay angle-typed in the param DAG.
+		{"magnet_arc_frac", formatFrac(d.Spec.MagnetArc)},
+		{"magnet_arc_deg", "magnet_arc_frac * 360 deg / poles"},
+		{"slot_pitch_angle", "360 deg / slots"},
+		{"tooth_angle", "tooth_width / slot_pitch * 360 deg / slots"},
+		{"pole_pitch_angle", "360 deg / poles"},
+	}
+	return append(base, geometryRadii(d)...)
+}
+
+// geometryRadii are the role-based boundary radii the tooth/magnet/circle builders
+// dimension against. Their formulas flip with the motor type: an inrunner stacks the slot
+// bottoms and yoke OUTWARD beyond the bore, while an outrunner mirrors the stack-up about
+// the airgap (stator inside, slot bottoms within the bore). Defined as formulas of the
+// drivers so editing a driver re-derives them (and recomputes the parts).
+func geometryRadii(d *Design) []motorParam {
+	if d.Spec.normType() == Outrunner {
+		return []motorParam{
+			{"tooth_tip_r", "bore_r"},
+			{"slot_bottom_r", "bore_r - slot_depth"},
+			{"stator_yoke_r", "bore_r - slot_depth - stator_yoke"},
+			{"magnet_back_r", "bore_r + airgap"},
+			{"magnet_tip_r", "bore_r + airgap + magnet_thick"},
+			{"rotor_yoke_r", "bore_r + airgap + magnet_thick + rotor_yoke"},
+		}
+	}
+	return []motorParam{
+		{"tooth_tip_r", "bore_r"},
+		{"slot_bottom_r", "bore_r + slot_depth"},
+		{"stator_yoke_r", "stator_outer_r"},
+		{"magnet_back_r", "magnet_inner_r"},
+		{"magnet_tip_r", "rotor_outer_r"},
+		{"rotor_yoke_r", "rotor_inner_r"},
 	}
 }
+
+// formatFrac renders a unitless pole-arc fraction as a bare decimal literal (no unit), so
+// the param engine reads it as the dimensionless multiplier the angle formulas expect.
+func formatFrac(v float64) string { return fmt.Sprintf("%g", v) }
 
 // publishParameters adds the design's parameter program to the active part, idempotently
 // (Set when a parameter already exists, Add otherwise). It returns the count published.

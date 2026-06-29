@@ -22,6 +22,11 @@ type fakeHost struct {
 	mu          sync.Mutex
 	calls       []string                   // every method name, in order
 	entities    []wire.AddSketchEntityArgs // sketch.addEntity requests, decoded
+	constraints []wire.AddConstraintArgs   // sketch.addConstraint requests, decoded
+	dimensions  []wire.AddDimensionArgs    // sketch.addDimension requests, decoded
+	featureArgs []wire.AddFeatureArgs      // features.add requests, decoded (kind + raw args)
+	entitySeq   uint64                     // running sketch entity-id sequence (AddSketchEntityResult.EntityID)
+	pointSeq    uint64                     // running sketch point-id sequence (AddSketchEntityResult.PointIDs)
 	params      []wire.ParameterSetArgs    // parameters.add/set requests, decoded
 	assigned    []string                   // material ids assigned (model.assignMaterial)
 	placed      []string                   // occurrence names placed (assembly.place)
@@ -67,8 +72,12 @@ func (h *fakeHost) dispatch(method string, req []byte) ([]byte, error) {
 		return h.createSketch()
 	case wire.MethodSketchAddEntity:
 		return h.recordEntity(req)
+	case wire.MethodSketchAddConstraint:
+		return h.recordConstraint(req)
+	case wire.MethodSketchAddDimension:
+		return h.recordDimension(req)
 	case wire.MethodFeaturesAdd:
-		return h.addFeature()
+		return h.addFeature(req)
 	case wire.MethodModelTree:
 		return json.Marshal(wire.ModelTreeResult{Features: []wire.FeatureInfo{{ID: h.featSeq, Name: "Extrusion"}}})
 	case wire.MethodFeaturesRename:
@@ -117,7 +126,12 @@ func (h *fakeHost) createSketch() ([]byte, error) {
 	return json.Marshal(wire.CreateSketchResult{SketchIndex: idx, Plane: "XY"})
 }
 
-func (h *fakeHost) addFeature() ([]byte, error) {
+func (h *fakeHost) addFeature(req []byte) ([]byte, error) {
+	var a wire.AddFeatureArgs
+	if err := json.Unmarshal(req, &a); err != nil {
+		return nil, err
+	}
+	h.featureArgs = append(h.featureArgs, a)
 	h.features++
 	h.featSeq++
 	// Mirror the host's real extrude reply: Bodies is the part's TOTAL body count after the
@@ -128,6 +142,28 @@ func (h *fakeHost) addFeature() ([]byte, error) {
 	}
 	h.bodiesByDoc[h.activeDoc]++
 	return json.Marshal(extrudeResult{Feature: "Extrusion", Bodies: h.bodiesByDoc[h.activeDoc], Healthy: true})
+}
+
+// recordConstraint logs a geometric-constraint request and reports a fully-solved DOF (the
+// fake has no solver; DOF=0 is verified live, not here).
+func (h *fakeHost) recordConstraint(req []byte) ([]byte, error) {
+	var a wire.AddConstraintArgs
+	if err := json.Unmarshal(req, &a); err != nil {
+		return nil, err
+	}
+	h.constraints = append(h.constraints, a)
+	return json.Marshal(wire.AddConstraintResult{Kind: a.Kind, DOF: 0})
+}
+
+// recordDimension logs a dimensional-constraint request, echoing the expression as the
+// backing parameter name so a caller reading the reply sees a non-empty parameter.
+func (h *fakeHost) recordDimension(req []byte) ([]byte, error) {
+	var a wire.AddDimensionArgs
+	if err := json.Unmarshal(req, &a); err != nil {
+		return nil, err
+	}
+	h.dimensions = append(h.dimensions, a)
+	return json.Marshal(wire.AddDimensionResult{Kind: a.Kind, Parameter: a.Expression, DOF: 0})
 }
 
 func (h *fakeHost) recordParam(req []byte) ([]byte, error) {
@@ -145,7 +181,20 @@ func (h *fakeHost) recordEntity(req []byte) ([]byte, error) {
 		return nil, err
 	}
 	h.entities = append(h.entities, a)
-	return json.Marshal(wire.AddSketchEntityResult{})
+	// Hand back a unique entity id and one point id per defining point (literal or expression)
+	// so the geometry code can reference a circle/arc for a dimension and its centre/endpoints
+	// for a constraint — mirroring the host's AddSketchEntityResult shape.
+	h.entitySeq++
+	n := len(a.Points)
+	if len(a.PointExprs) > n {
+		n = len(a.PointExprs)
+	}
+	pts := make([]uint64, n)
+	for i := range pts {
+		h.pointSeq++
+		pts[i] = h.pointSeq
+	}
+	return json.Marshal(wire.AddSketchEntityResult{EntityID: h.entitySeq, Kind: a.Kind, PointIDs: pts})
 }
 
 func (h *fakeHost) recordAssign(req []byte) ([]byte, error) {
