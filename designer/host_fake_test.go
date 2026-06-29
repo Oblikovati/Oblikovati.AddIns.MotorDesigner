@@ -25,6 +25,7 @@ type fakeHost struct {
 	constraints []wire.AddConstraintArgs   // sketch.addConstraint requests, decoded
 	dimensions  []wire.AddDimensionArgs    // sketch.addDimension requests, decoded
 	featureArgs []wire.AddFeatureArgs      // features.add requests, decoded (kind + raw args)
+	commands    []wire.CreateCommandArgs   // commands.create requests, decoded (id + icon + style)
 	entitySeq   uint64                     // running sketch entity-id sequence (AddSketchEntityResult.EntityID)
 	pointSeq    uint64                     // running sketch point-id sequence (AddSketchEntityResult.PointIDs)
 	params      []wire.ParameterSetArgs    // parameters.add/set requests, decoded
@@ -86,6 +87,8 @@ func (h *fakeHost) dispatch(method string, req []byte) ([]byte, error) {
 		return h.recordAssign(req)
 	case wire.MethodAssemblyPlace:
 		return h.recordPlace(req)
+	case wire.MethodCommandsCreate:
+		return h.recordCommand(req)
 	case wire.MethodStatusSetText:
 		return h.recordStatus(req)
 	case wire.MethodAttributesSet:
@@ -248,6 +251,15 @@ func attrKey(doc uint64, set, name string) string {
 	return fmt.Sprintf("%d/%s/%s", doc, set, name)
 }
 
+func (h *fakeHost) recordCommand(req []byte) ([]byte, error) {
+	var a wire.CreateCommandArgs
+	if err := json.Unmarshal(req, &a); err != nil {
+		return nil, err
+	}
+	h.commands = append(h.commands, a)
+	return json.Marshal(wire.CommandInfo{ID: a.ID})
+}
+
 func (h *fakeHost) recordStatus(req []byte) ([]byte, error) {
 	var a wire.SetStatusTextArgs
 	if err := json.Unmarshal(req, &a); err != nil {
@@ -255,6 +267,19 @@ func (h *fakeHost) recordStatus(req []byte) ([]byte, error) {
 	}
 	h.statusText = append(h.statusText, a.Text)
 	return json.Marshal(wire.OKResult{OK: true})
+}
+
+// paramExpression returns the published expression for a parameter name (under the lock), and
+// whether it was published — used by tests that read params after async generation.
+func (h *fakeHost) paramExpression(name string) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, p := range h.params {
+		if p.Name == name {
+			return p.Expression, true
+		}
+	}
+	return "", false
 }
 
 // lastStatus returns the most recent status.setText message under the lock ("" if none).
