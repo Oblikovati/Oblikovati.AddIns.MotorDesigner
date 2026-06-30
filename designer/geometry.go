@@ -149,7 +149,7 @@ func (e *Engine) buildStatorPart(d *Design, l layout, res *GenerateResult) (uint
 	if err := e.linkAssemblyParameters(statorLinkedParams()); err != nil {
 		return 0, fmt.Errorf("stator parameters: %w", err)
 	}
-	if err := e.buildStatorYoke(); err != nil {
+	if err := e.buildStatorYoke(l); err != nil {
 		return 0, err
 	}
 	if err := e.buildToothPattern(d, l); err != nil {
@@ -159,17 +159,33 @@ func (e *Engine) buildStatorPart(d *Design, l layout, res *GenerateResult) (uint
 	return id, e.assignPartMaterial(res.IronMaterial)
 }
 
+// statorYokeRadii returns the stator yoke annulus's OUTER then INNER radius parameter, ordered by
+// the topology so the extrude's first (boundary) circle is always the larger one and the second is
+// the hole. The roles FLIP with the motor type: an inrunner yoke is the OUTER ring (OD =
+// stator_yoke_r, bore = slot_bottom_r), while an outrunner yoke is the INNER ring (OD =
+// slot_bottom_r where the teeth meet it, bore = stator_yoke_r, the shaft side). Passing them
+// inner-first (as the old code did unconditionally) built a solid disk at the smaller radius for
+// the outrunner, so the teeth had nothing to fuse to and floated off the yoke.
+func statorYokeRadii(l layout) (outerParam, innerParam string) {
+	if l.teethFaceOut { // outrunner: yoke is the inner ring; slot bottoms are its OUTER edge
+		return "slot_bottom_r", "stator_yoke_r"
+	}
+	return "stator_yoke_r", "slot_bottom_r" // inrunner: yoke is the outer ring
+}
+
 // buildStatorYoke extrudes the smooth annulus between the stator yoke boundary and the slot
-// bottoms (two grounded, radius-dimensioned circles).
-func (e *Engine) buildStatorYoke() error {
+// bottoms (two grounded, radius-dimensioned circles), outer circle first so the annulus is valid
+// for both motor types.
+func (e *Engine) buildStatorYoke(l layout) error {
 	sk, err := e.api.Sketch().Create(wire.CreateSketchArgs{Plane: "XY"})
 	if err != nil {
 		return fmt.Errorf("stator yoke sketch: %w", err)
 	}
-	if err := e.addGroundedCircle(sk.SketchIndex, "stator_yoke_r"); err != nil {
+	outer, inner := statorYokeRadii(l)
+	if err := e.addGroundedCircle(sk.SketchIndex, outer); err != nil {
 		return fmt.Errorf("stator yoke OD: %w", err)
 	}
-	if err := e.addGroundedCircle(sk.SketchIndex, "slot_bottom_r"); err != nil {
+	if err := e.addGroundedCircle(sk.SketchIndex, inner); err != nil {
 		return fmt.Errorf("stator yoke bore: %w", err)
 	}
 	_, err = e.extrudeNamed(sk.SketchIndex, "new", "Stator Yoke")
@@ -258,11 +274,28 @@ func rotorRadii(l layout) (outerParam, innerParam string) {
 	return "magnet_back_r", "rotor_yoke_r"
 }
 
-// toothSector specs one stator tooth as an annular sector between the tooth tip and slot bottom,
-// spanning the tooth's angular share of a slot pitch (toothFrac · π / slots half-angle).
+// toothSector specs one stator tooth as an annular sector between the slot bottom (where it fuses
+// to the yoke) and the tooth tip (at the airgap), spanning the tooth's angular share of a slot
+// pitch (toothFrac · π / slots half-angle). The sector's inner/outer arcs are ordered by RADIUS,
+// not by role, so the profile winds correctly and its inner arc lands ON the yoke for both motor
+// types: the tooth tip is the SMALL radius for an inrunner (teeth point inward to the bore) but the
+// LARGE radius for an outrunner (teeth point outward to the airgap). Passing tooth_tip_r as the
+// inner arc unconditionally (as before) inverted the outrunner tooth so it floated off the yoke.
 func toothSector(l layout, d *Design) sector {
 	half := l.toothFrac * math.Pi / float64(d.Spec.Slots)
-	return sector{
+	if l.teethFaceOut { // outrunner: tooth tip (airgap) is the outer arc
+		// The root reaches the yoke's INNER radius (stator_yoke_r), not the slot bottom, so the tooth
+		// OVERLAPS the whole yoke ring instead of merely touching its outer edge. A tangent contact
+		// (zero volume overlap) does not fuse reliably at the smaller outrunner radius — the union
+		// left the teeth as separate shells (13-shell body) — whereas a real overlap fuses robustly
+		// into one shell. The buried overlap is inside the solid yoke, so the visible slot (from the
+		// yoke's outer edge to the tip) is unchanged.
+		return sector{
+			rInnerSeed: l.statorYokeR, rOuterSeed: l.toothTipR, halfSeed: half,
+			rInnerParam: "stator_yoke_r", rOuterParam: "tooth_tip_r", spanParam: "tooth_angle",
+		}
+	}
+	return sector{ // inrunner: tooth tip at the bore is the inner arc, slot bottom the outer
 		rInnerSeed: l.toothTipR, rOuterSeed: l.slotBottomR, halfSeed: half,
 		rInnerParam: "tooth_tip_r", rOuterParam: "slot_bottom_r", spanParam: "tooth_angle",
 	}
