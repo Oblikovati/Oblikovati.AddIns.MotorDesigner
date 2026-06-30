@@ -19,4 +19,14 @@ module oblikovati.org/motor-designer
 
 go 1.24.0
 
-require oblikovati.org/api v0.99.0
+require (
+	oblikovati.org v0.0.0-00010101000000-000000000000
+	oblikovati.org/api v0.99.0
+)
+
+require (
+	github.com/yuin/gopher-lua v1.1.1 // indirect
+	golang.org/x/image v0.0.0-20211028202545-6944b10bf410 // indirect
+	golang.org/x/text v0.22.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
