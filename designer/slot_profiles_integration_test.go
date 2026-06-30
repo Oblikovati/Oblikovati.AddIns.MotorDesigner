@@ -1,4 +1,13 @@
+//go:build integration
+
 // SPDX-License-Identifier: GPL-2.0-only
+
+// These designer<->host integration tests import the GPL host (oblikovati.org/app, addin/router)
+// to drive the REAL router + solver + boolean, so they are gated behind the `integration` build
+// tag: the normal `go test ./...` run skips them (no host import, no test-scope host require), and
+// they run locally via `go test -tags integration ./designer/...` with the go.work-resolved host.
+// Wiring them into CI needs the host's transitive deps in go.sum (the siblings action injects the
+// replace, not a require) — tracked as a separate infrastructure task.
 
 package designer
 
