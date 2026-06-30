@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"oblikovati.org/api/client"
+	"oblikovati.org/api/types"
 	"oblikovati.org/api/wire"
 )
 
@@ -38,25 +39,18 @@ func NewEngine(host HostCaller) *Engine {
 // API exposes the underlying typed client (used by the dockable-window + geometry code).
 func (e *Engine) API() *client.Client { return e.api }
 
-// RegisterCommands registers the add-in's ribbon command(s) with the host so they can be
-// invoked the same way a ribbon click is — including over the MCP bridge's
-// execute_command. The host action is a no-op; executing the command fires the
-// command.started event the engine's Notify turns into a Generate run. This is what makes
-// the add-in drivable headlessly (no panel click needed).
+// RegisterCommands registers the add-in's single ribbon command: a "Motor Designer" button
+// (with its own SVG glyph) that opens the design window. Generation is driven from inside that
+// window (the panel's Generate button), so the ribbon stays one button — not one per action.
+// The command is also invocable over the MCP bridge's execute_command, which re-opens the panel.
 func (e *Engine) RegisterCommands() error {
-	if _, err := e.api.Commands().Create(wire.CreateCommandArgs{
-		ID:          GenerateCommandID,
-		DisplayName: "Generate Motor",
-		Category:    "Motor Designer",
-		Tooltip:     "Generate the rough motor cross-section from the current design (inrunner).",
-	}); err != nil {
-		return err
-	}
 	_, err := e.api.Commands().Create(wire.CreateCommandArgs{
-		ID:          GenerateOutrunnerCommandID,
-		DisplayName: "Generate Outrunner Motor",
+		ID:          ShowCommandID,
+		DisplayName: "Motor Designer",
 		Category:    "Motor Designer",
-		Tooltip:     "Generate the rough motor cross-section as an outrunner (rotor ring outside the stator).",
+		Tooltip:     "Open the Motor Designer window to size and generate a motor.",
+		IconSVG:     motorIconSVG,
+		ButtonStyle: types.LargeIconButton,
 	})
 	return err
 }
@@ -147,8 +141,9 @@ func (e *Engine) handleDocumentActivated(ev []byte) {
 	_, _ = e.ShowPanel(spec)
 }
 
-// handleCommand runs the generation command (the panel's Generate button or the MCP
-// execute_command), for the current spec.
+// handleCommand handles the add-in's single ribbon command: the "Motor Designer" button
+// (re)opens the design window. ShowPanel makes host calls, which deadlock on the session
+// goroutine (see Notify), so it runs on its own goroutine.
 func (e *Engine) handleCommand(ev []byte) {
 	var c struct {
 		Command string `json:"command"`
@@ -156,16 +151,15 @@ func (e *Engine) handleCommand(ev []byte) {
 	if json.Unmarshal(ev, &c) != nil {
 		return
 	}
-	switch c.Command {
-	case GenerateCommandID:
-		e.runGenerate(Inrunner)
-	case GenerateOutrunnerCommandID:
-		e.runGenerate(Outrunner)
+	if c.Command == ShowCommandID {
+		go func() { _, _ = e.ShowPanel(e.Spec()) }()
 	}
 }
 
-// handlePanelEdit writes one edited form field back into the spec. This only mutates the spec
-// (no host call), so it is safe on the session goroutine; the next Generate uses the new value.
+// handlePanelEdit handles one panel interaction. The Generate button (a command-less panel
+// action) starts a generation of the current spec; every other control is a field edit written
+// back into the spec. Field edits only mutate the spec (no host call), so they are safe on the
+// session goroutine; runGenerate dispatches the host work to its own goroutine.
 func (e *Engine) handlePanelEdit(ev []byte) {
 	var p struct {
 		WindowId  string `json:"windowId"`
@@ -175,15 +169,20 @@ func (e *Engine) handlePanelEdit(ev []byte) {
 	if json.Unmarshal(ev, &p) != nil || p.WindowId != PanelID {
 		return
 	}
+	if p.ControlId == generateControlID {
+		e.runGenerate()
+		return
+	}
 	e.mu.Lock()
 	applyControl(&e.spec, p.ControlId, p.Value)
 	e.mu.Unlock()
 }
 
-// runGenerate launches a generation pass on its own goroutine (never the session
-// goroutine — see Notify), for the given motor type. The generating flag coalesces
-// overlapping command triggers so at most one run is in flight.
-func (e *Engine) runGenerate(mt MotorType) {
+// runGenerate launches a generation pass on its own goroutine (never the session goroutine —
+// see Notify) for the CURRENT spec, so the motor-type dropdown (and every other edited field)
+// is honoured. The generating flag coalesces overlapping triggers so at most one run is in
+// flight.
+func (e *Engine) runGenerate() {
 	e.mu.Lock()
 	if e.generating {
 		e.mu.Unlock()
@@ -191,7 +190,6 @@ func (e *Engine) runGenerate(mt MotorType) {
 	}
 	e.generating = true
 	spec := e.spec
-	spec.Type = mt
 	e.mu.Unlock()
 
 	go func() {

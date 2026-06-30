@@ -36,9 +36,27 @@ func TestPanelControlsHaveGenerateButton(t *testing.T) {
 	if btn == nil {
 		t.Fatalf("no button in panel controls")
 	}
-	if btn.CommandID != GenerateCommandID {
-		t.Errorf("button command = %q, want %q", btn.CommandID, GenerateCommandID)
+	// The Generate button is a command-less panel action (id "generate"); a host CommandID would
+	// register a second ribbon button, which is exactly what this change removes.
+	if btn.CommandID != "" {
+		t.Errorf("Generate button has CommandID %q, want empty (panel action, not a ribbon command)", btn.CommandID)
 	}
+	if btn.ID != generateControlID {
+		t.Errorf("Generate button id = %q, want %q", btn.ID, generateControlID)
+	}
+}
+
+// generatePanelEvent is the host event for clicking the panel's command-less Generate button:
+// a PanelValueChanged for the generate control id (see clickAddInPanelButton in the head).
+func generatePanelEvent() []byte {
+	return []byte(`{"type":"` + wire.EventPanelValueChanged + `","windowId":"` + PanelID +
+		`","controlId":"` + generateControlID + `","value":""}`)
+}
+
+// typeDropdownEvent is the host event for choosing a motor type in the panel's "type" dropdown.
+func typeDropdownEvent(t MotorType) []byte {
+	return []byte(`{"type":"` + wire.EventPanelValueChanged + `","windowId":"` + PanelID +
+		`","controlId":"type","value":"` + string(t) + `"}`)
 }
 
 func TestPanelControlsReflectSpecAndResults(t *testing.T) {
@@ -114,14 +132,52 @@ func TestNotifyPanelEditUpdatesSpec(t *testing.T) {
 	}
 }
 
-func TestRegisterCommandsCreatesGenerateCommand(t *testing.T) {
+// TestRegisterCommandsCreatesSingleShowButtonWithIcon pins the ribbon surface: exactly ONE
+// command — the "Motor Designer" show button — carrying an SVG glyph and a large-icon style. The
+// old per-action "Generate Motor" / "Generate Outrunner" buttons are gone.
+func TestRegisterCommandsCreatesSingleShowButtonWithIcon(t *testing.T) {
 	h := &fakeHost{}
 	e := NewEngine(h)
 	if err := e.RegisterCommands(); err != nil {
 		t.Fatalf("RegisterCommands: %v", err)
 	}
-	if got := lastCall(h); got != wire.MethodCommandsCreate {
-		t.Errorf("last call = %q, want %q", got, wire.MethodCommandsCreate)
+	if len(h.commands) != 1 {
+		t.Fatalf("registered %d commands, want exactly 1 (the show button); got %+v", len(h.commands), h.commands)
+	}
+	c := h.commands[0]
+	if c.ID != ShowCommandID {
+		t.Errorf("command id = %q, want %q", c.ID, ShowCommandID)
+	}
+	if c.DisplayName != "Motor Designer" {
+		t.Errorf("display name = %q, want \"Motor Designer\"", c.DisplayName)
+	}
+	if !strings.Contains(c.IconSVG, "<svg") || !strings.Contains(c.IconSVG, "viewBox=\"0 0 24 24\"") {
+		t.Errorf("command must ship a 24×24 SVG glyph, got IconSVG=%q", c.IconSVG)
+	}
+	if c.ButtonStyle != types.LargeIconButton {
+		t.Errorf("button style = %v, want LargeIconButton", c.ButtonStyle)
+	}
+}
+
+// TestNotifyGenerateRespectsTypeDropdown is the regression for the reported bug: choosing
+// "outrunner" in the panel's type dropdown must be honoured by Generate. It drives the dropdown
+// edit then the Generate action and checks the published program carries the OUTRUNNER slot-bottom
+// formula (slot bottoms inside the bore), which only the outrunner layout emits.
+func TestNotifyGenerateRespectsTypeDropdown(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	e.Notify(typeDropdownEvent(Outrunner)) // pick outrunner in the form
+	e.Notify(generatePanelEvent())         // then Generate
+	if !h.waitForDocs(4) {
+		t.Fatalf("generation did not complete; docs=%d", h.docCount())
+	}
+	waitForStatus(h) // generation goroutine has finished once it reports its outcome
+	expr, ok := h.paramExpression("slot_bottom_r")
+	if !ok {
+		t.Fatal("slot_bottom_r was never published; cannot confirm the motor type was respected")
+	}
+	if expr != "bore_r - slot_depth" {
+		t.Errorf("slot_bottom_r = %q, want outrunner formula \"bore_r - slot_depth\" — type dropdown ignored", expr)
 	}
 }
 
@@ -154,8 +210,7 @@ func sawCall(h *fakeHost, method string) bool {
 func TestNotifyGenerateCommandTriggersGeneration(t *testing.T) {
 	h := &fakeHost{}
 	e := NewEngine(h)
-	ev := []byte(`{"type":"` + wire.EventCommandStarted + `","command":"` + GenerateCommandID + `"}`)
-	e.Notify(ev) // dispatches generation onto its own goroutine (never the caller's)
+	e.Notify(generatePanelEvent()) // command-less Generate button → panel action → generation on its own goroutine
 	if !h.waitForDocs(1) {
 		t.Errorf("Generate command should have created a document; docs=%d", h.docCount())
 	}
@@ -164,7 +219,7 @@ func TestNotifyGenerateCommandTriggersGeneration(t *testing.T) {
 func TestNotifySurfacesGenerateSuccessOnStatusBar(t *testing.T) {
 	h := &fakeHost{}
 	e := NewEngine(h)
-	e.Notify([]byte(`{"type":"` + wire.EventCommandStarted + `","command":"` + GenerateCommandID + `"}`))
+	e.Notify(generatePanelEvent())
 	if !h.waitForDocs(4) { // 3 parts + 1 assembly
 		t.Fatalf("generation did not complete; docs=%d", h.docCount())
 	}
@@ -177,7 +232,7 @@ func TestNotifySurfacesGenerateSuccessOnStatusBar(t *testing.T) {
 func TestNotifySurfacesGenerateFailureOnStatusBar(t *testing.T) {
 	h := &fakeHost{failOn: wire.MethodDocumentsCreate}
 	e := NewEngine(h)
-	e.Notify([]byte(`{"type":"` + wire.EventCommandStarted + `","command":"` + GenerateCommandID + `"}`))
+	e.Notify(generatePanelEvent())
 	waitForStatus(h)
 	if msg := h.lastStatus(); !strings.Contains(msg, "failed") {
 		t.Errorf("status should report the failure, got %q", msg)

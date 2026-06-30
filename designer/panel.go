@@ -15,14 +15,24 @@ import (
 // PanelID is the stable dockable-window id the add-in owns.
 const PanelID = "com.oblikovati.motor-designer.panel"
 
-// GenerateCommandID is the command the panel's Generate button names; the host reports
-// the click as an ordinary command-ended event the engine handles in Notify. It generates
-// the current spec (inrunner by default).
-const GenerateCommandID = "MotorDesigner.Generate"
+// ShowCommandID is the single ribbon command the add-in registers: it opens the Motor Designer
+// window. Generation happens INSIDE that window (see generateControlID), so the ribbon stays a
+// single button rather than one-button-per-action.
+const ShowCommandID = "MotorDesigner.Show"
 
-// GenerateOutrunnerCommandID generates the current spec as an OUTRUNNER (rotor ring outside
-// the stator), without needing panel inputs — drivable headlessly for testing both layouts.
-const GenerateOutrunnerCommandID = "MotorDesigner.GenerateOutrunner"
+// generateControlID is the panel's Generate button. The button carries no host command, so the
+// host reports a click as a PanelValueChanged for this id (a panel action) — the engine turns it
+// into a generation of the CURRENT spec, honouring the motor-type dropdown.
+const generateControlID = "generate"
+
+// motorIconSVG is the ribbon button glyph: a stator/cog ring with a red rotor shaft, in the
+// host's icon convention (24×24, #00ff00 backplate, black primary linework, #ff0000 accent),
+// recoloured per theme (Oblikovati#671).
+const motorIconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">` +
+	`<rect x="1" y="1" width="22" height="22" rx="4" fill="#00ff00" stroke="none"/>` +
+	`<g stroke-width="2.2"><path d="M19.5 12 H22"/><path d="M17.3 17.3 L19.07 19.07"/><path d="M12 19.5 V22"/><path d="M6.7 17.3 L4.93 19.07"/>` +
+	`<path d="M4.5 12 H2"/><path d="M6.7 6.7 L4.93 4.93"/><path d="M12 4.5 V2"/><path d="M17.3 6.7 L19.07 4.93"/></g>` +
+	`<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="3.4"/><circle cx="12" cy="12" r="1.4" fill="#ff0000" stroke="none"/></svg>`
 
 // ShowPanel creates (or replaces) the design-options dockable window, seeded from a Spec
 // and the cross-section it computes. Inputs are rendered as labels (the panel vocabulary
@@ -54,8 +64,7 @@ func panelControls(s Spec) ([]wire.PanelControlSpec, error) {
 	controls = append(controls, resultControls(d)...)
 	controls = append(controls, wire.PanelControlSpec{Kind: types.PanelSeparator})
 	controls = append(controls, wire.PanelControlSpec{
-		Kind: types.PanelButton, ID: "generate", Text: "Generate Geometry",
-		CommandID: GenerateCommandID,
+		Kind: types.PanelButton, ID: generateControlID, Text: "Generate Geometry",
 	})
 	return controls, nil
 }
