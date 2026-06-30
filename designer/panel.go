@@ -25,6 +25,16 @@ const ShowCommandID = "MotorDesigner.Show"
 // into a generation of the CURRENT spec, honouring the motor-type dropdown.
 const generateControlID = "generate"
 
+// GenerateCommandID and GenerateOutrunnerCommandID are HEADLESS generation commands: registered
+// without ribbon placement (the ribbon stays a single Show button), they let a script or the MCP
+// bridge generate a motor with execute_command — no panel interaction, which a non-interactive
+// driver cannot perform. ...Generate uses the current spec; ...GenerateOutrunner forces the
+// outrunner topology first, mirroring the panel's motor-type dropdown.
+const (
+	GenerateCommandID          = "MotorDesigner.Generate"
+	GenerateOutrunnerCommandID = "MotorDesigner.GenerateOutrunner"
+)
+
 // motorIconSVG is the ribbon button glyph: a stator/cog ring with a red rotor shaft, in the
 // host's icon convention (24×24, #00ff00 backplate, black primary linework, #ff0000 accent),
 // recoloured per theme (Oblikovati#671).

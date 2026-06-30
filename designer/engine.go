@@ -39,11 +39,20 @@ func NewEngine(host HostCaller) *Engine {
 // API exposes the underlying typed client (used by the dockable-window + geometry code).
 func (e *Engine) API() *client.Client { return e.api }
 
-// RegisterCommands registers the add-in's single ribbon command: a "Motor Designer" button
-// (with its own SVG glyph) that opens the design window. Generation is driven from inside that
-// window (the panel's Generate button), so the ribbon stays one button — not one per action.
-// The command is also invocable over the MCP bridge's execute_command, which re-opens the panel.
+// RegisterCommands registers the add-in's one ribbon button — a "Motor Designer" button (with
+// its own SVG glyph) that opens the design window — plus two unplaced headless generation
+// commands. Interactive generation runs from inside the window (the panel's Generate button), so
+// the ribbon stays one button; the headless commands give a script or the MCP bridge a way to
+// generate via execute_command without panel interaction (which a non-interactive driver cannot do).
 func (e *Engine) RegisterCommands() error {
+	if err := e.createShowCommand(); err != nil {
+		return err
+	}
+	return e.createGenerateCommands()
+}
+
+// createShowCommand registers the single ribbon button that opens the design window.
+func (e *Engine) createShowCommand() error {
 	_, err := e.api.Commands().Create(wire.CreateCommandArgs{
 		ID:          ShowCommandID,
 		DisplayName: "Motor Designer",
@@ -53,6 +62,23 @@ func (e *Engine) RegisterCommands() error {
 		ButtonStyle: types.LargeIconButton,
 	})
 	return err
+}
+
+// createGenerateCommands registers the headless generation commands (no ribbon placement, so the
+// ribbon stays one button). execute_command on either fires a generation through the same Notify
+// path as the panel's Generate button.
+func (e *Engine) createGenerateCommands() error {
+	for _, c := range []struct{ id, name string }{
+		{GenerateCommandID, "Generate Motor"},
+		{GenerateOutrunnerCommandID, "Generate Outrunner Motor"},
+	} {
+		if _, err := e.api.Commands().Create(wire.CreateCommandArgs{
+			ID: c.id, DisplayName: c.name, Category: "Motor Designer", Tooltip: c.name,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Setup performs the one-time host-facing initialization: register the Generate command
@@ -141,9 +167,10 @@ func (e *Engine) handleDocumentActivated(ev []byte) {
 	_, _ = e.ShowPanel(spec)
 }
 
-// handleCommand handles the add-in's single ribbon command: the "Motor Designer" button
-// (re)opens the design window. ShowPanel makes host calls, which deadlock on the session
-// goroutine (see Notify), so it runs on its own goroutine.
+// handleCommand routes the add-in's commands: the "Motor Designer" button (re)opens the design
+// window; the headless Generate / GenerateOutrunner commands run a generation directly (the
+// scriptable/MCP path). All host work is dispatched off the session goroutine — ShowPanel makes
+// host calls (which deadlock inline, see Notify), and runGenerate already spawns its own goroutine.
 func (e *Engine) handleCommand(ev []byte) {
 	var c struct {
 		Command string `json:"command"`
@@ -151,9 +178,23 @@ func (e *Engine) handleCommand(ev []byte) {
 	if json.Unmarshal(ev, &c) != nil {
 		return
 	}
-	if c.Command == ShowCommandID {
+	switch c.Command {
+	case ShowCommandID:
 		go func() { _, _ = e.ShowPanel(e.Spec()) }()
+	case GenerateCommandID:
+		e.runGenerate()
+	case GenerateOutrunnerCommandID:
+		e.generateOutrunner()
 	}
+}
+
+// generateOutrunner forces the outrunner topology onto the current spec, then generates — the
+// headless counterpart of choosing "Outrunner" in the panel's motor-type dropdown.
+func (e *Engine) generateOutrunner() {
+	e.mu.Lock()
+	e.spec.Type = Outrunner
+	e.mu.Unlock()
+	e.runGenerate()
 }
 
 // handlePanelEdit handles one panel interaction. The Generate button (a command-less panel
