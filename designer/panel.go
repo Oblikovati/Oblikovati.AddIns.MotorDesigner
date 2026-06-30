@@ -35,6 +35,24 @@ const (
 	GenerateOutrunnerCommandID = "MotorDesigner.GenerateOutrunner"
 )
 
+// The headless slot-profile commands set the stator slot type on the current spec then
+// generate, mirroring the panel's slot-type dropdown — so a script or the MCP bridge can pick a
+// profile (and compose with GenerateOutrunner for the motor type) without panel interaction.
+const (
+	GenerateParallelToothCommandID = "MotorDesigner.GenerateParallelTooth"
+	GenerateOpenRectCommandID      = "MotorDesigner.GenerateOpenRectangular"
+	GenerateRoundBottomCommandID   = "MotorDesigner.GenerateRoundBottom"
+)
+
+// slotTypeCommands maps each headless slot-profile command to the slot type it selects.
+func slotTypeCommands() map[string]SlotType {
+	return map[string]SlotType{
+		GenerateParallelToothCommandID: SlotParallelTooth,
+		GenerateOpenRectCommandID:      SlotOpenRectangular,
+		GenerateRoundBottomCommandID:   SlotRoundBottom,
+	}
+}
+
 // motorIconSVG is the ribbon button glyph: a stator/cog ring with a red rotor shaft, in the
 // host's icon convention (24×24, #00ff00 backplate, black primary linework, #ff0000 accent),
 // recoloured per theme (Oblikovati#671).

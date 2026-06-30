@@ -71,6 +71,9 @@ func (e *Engine) createGenerateCommands() error {
 	for _, c := range []struct{ id, name string }{
 		{GenerateCommandID, "Generate Motor"},
 		{GenerateOutrunnerCommandID, "Generate Outrunner Motor"},
+		{GenerateParallelToothCommandID, "Generate Parallel-Tooth Slots"},
+		{GenerateOpenRectCommandID, "Generate Open-Rectangular Slots"},
+		{GenerateRoundBottomCommandID, "Generate Round-Bottom Slots"},
 	} {
 		if _, err := e.api.Commands().Create(wire.CreateCommandArgs{
 			ID: c.id, DisplayName: c.name, Category: "Motor Designer", Tooltip: c.name,
@@ -178,6 +181,10 @@ func (e *Engine) handleCommand(ev []byte) {
 	if json.Unmarshal(ev, &c) != nil {
 		return
 	}
+	if st, ok := slotTypeCommands()[c.Command]; ok {
+		e.generateWithSlotType(st)
+		return
+	}
 	switch c.Command {
 	case ShowCommandID:
 		go func() { _, _ = e.ShowPanel(e.Spec()) }()
@@ -186,6 +193,15 @@ func (e *Engine) handleCommand(ev []byte) {
 	case GenerateOutrunnerCommandID:
 		e.generateOutrunner()
 	}
+}
+
+// generateWithSlotType sets the stator slot profile on the current spec, then generates — the
+// headless counterpart of choosing a profile in the panel's slot-type dropdown.
+func (e *Engine) generateWithSlotType(st SlotType) {
+	e.mu.Lock()
+	e.spec.SlotType = st
+	e.mu.Unlock()
+	e.runGenerate()
 }
 
 // generateOutrunner forces the outrunner topology onto the current spec, then generates — the
