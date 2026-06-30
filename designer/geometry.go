@@ -17,7 +17,7 @@ type GenerateResult struct {
 	StatorDocID   uint64 // session id of the Stator part document
 	RotorDocID    uint64 // session id of the Rotor part document
 	MagnetDocID   uint64 // session id of the Magnets part document
-	ParametersSet int    // parameters published on the stator part
+	ParametersSet int    // parameters published on the Motor assembly (the source the parts derive from)
 	StatorBodies  int    // solids the stator extrude produced (>=1 on success)
 	RotorBodies   int    // solids the rotor extrude produced (>=1 on success)
 	MagnetBodies  int    // magnet solids produced (one per pole on success)
@@ -43,6 +43,12 @@ type extrudeResult struct {
 	Healthy bool   `json:"healthy"`
 }
 
+// MotorAssemblyName is the document name of the generated assembly. It is both the assembly's
+// display name and — because an unsaved document's full name is the name it was created with
+// (model/doc.Workspace.Add) — the SourceDocument the component parts link their derived
+// parameters from. Defined once so the create call and the derive calls cannot drift.
+const MotorAssemblyName = "Motor"
+
 // Generate computes the design from a Spec and lays it down as a host ASSEMBLY of three
 // separated component parts — Stator, Rotor and Magnets — each its own part document with
 // its own (part-default) magnetic material and a clean planar cross-section the FEMM bridge
@@ -53,12 +59,15 @@ type extrudeResult struct {
 // grade and the magnets carry their magnet grade — distinct regions, distinct materials,
 // without needing a per-body reference key (which the API does not yet expose).
 //
-// NOTE on parameter binding: every part publishes the design's parameter program (formulas of
-// the design drivers) and builds REAL, fully-constrained geometry driven by it — grounded
-// radius-dimensioned circles for the yoke/rotor annuli, and real-arc annular sectors (driving
-// radius + half-angle dimensions) for the stator tooth and the magnet, each circular-patterned
-// by a parameter-driven count. Editing a driver recomputes every part in place — no polylines,
-// no literal coordinates, no sketch recreation.
+// Parameter ownership (M39): the Motor ASSEMBLY owns the design's full sizing program (formulas
+// of the design drivers) as the single source of truth, created FIRST so it exists before the
+// parts. Each component part then LINKS only the assembly parameters it consumes as read-only
+// derived parameters (a derived-parameter table), and builds REAL, fully-constrained geometry
+// driven by those linked names — grounded radius-dimensioned circles for the yoke/rotor annuli,
+// and real-arc annular sectors (driving radius + half-angle dimensions) for the stator tooth and
+// the magnet, each circular-patterned by a parameter-driven count. Editing a driver on the
+// assembly repropagates to every linked part, which recomputes in place — no duplicated program,
+// no polylines, no literal coordinates, no sketch recreation.
 func (e *Engine) Generate(s Spec) (*GenerateResult, error) {
 	d, err := Compute(s)
 	if err != nil {
@@ -72,13 +81,18 @@ func (e *Engine) Generate(s Spec) (*GenerateResult, error) {
 		IronMaterial: HostSteelMaterialID(s.SteelGrade),
 		MagnetMatID:  HostMagnetMaterialID(s.MagnetGrade),
 	}
-	// The geometry is laid down from the topology-resolved layout (role-based radii). The FEMM
-	// hand-off (publishFEMMDescriptor) builds its own faceted CrossSection from the Design for
-	// 2D meshing — the host sketches are now real arcs, so the two no longer share a profile.
+	// The assembly is created and parameterized FIRST so it can be the derive source while the
+	// component parts are built. The geometry is then laid down from the topology-resolved layout
+	// (role-based radii). The FEMM hand-off (publishFEMMDescriptor) builds its own faceted
+	// CrossSection from the Design for 2D meshing — the host sketches are real arcs, so the two
+	// no longer share a profile.
+	if err := e.createMotorAssembly(d, res); err != nil {
+		return nil, err
+	}
 	if err := e.buildComponents(d, resolveLayout(d), res); err != nil {
 		return nil, err
 	}
-	if err := e.assembleMotor(res); err != nil {
+	if err := e.placeComponents(res); err != nil {
 		return nil, err
 	}
 	// Hand the FEMM descriptor of this motor to the magnetics add-in (best-effort: a failed
@@ -89,13 +103,33 @@ func (e *Engine) Generate(s Spec) (*GenerateResult, error) {
 	return res, e.saveSpec(res.AssemblyID, s)
 }
 
+// createMotorAssembly creates the Motor assembly, activates it, marks it a motor member, and
+// publishes the full sizing parameter program onto it — the single source of truth the parts
+// derive from (M39-F03 makes the assembly a first-class parameter holder). It must run before
+// buildComponents so the parts can link their parameters from an open, parameterized source.
+func (e *Engine) createMotorAssembly(d *Design, res *GenerateResult) error {
+	asm, err := e.api.Documents().Create(wire.CreateDocumentArgs{Type: "assembly", Name: MotorAssemblyName})
+	if err != nil {
+		return fmt.Errorf("create motor assembly: %w", err)
+	}
+	res.AssemblyID = asm.ID
+	_ = e.markMotorMember(asm.ID) // best-effort: a missing marker only costs a regenerate collision
+	if _, err := e.api.Documents().Activate(asm.ID); err != nil {
+		return fmt.Errorf("activate motor assembly: %w", err)
+	}
+	if res.ParametersSet, err = e.publishParameters(d); err != nil {
+		return fmt.Errorf("assembly parameters: %w", err)
+	}
+	return nil
+}
+
 // buildComponents creates and fills the three component part documents.
 func (e *Engine) buildComponents(d *Design, l layout, res *GenerateResult) error {
 	var err error
 	if res.StatorDocID, err = e.buildStatorPart(d, l, res); err != nil {
 		return err
 	}
-	if res.RotorDocID, err = e.buildRotorPart(d, l, res); err != nil {
+	if res.RotorDocID, err = e.buildRotorPart(l, res); err != nil {
 		return err
 	}
 	res.MagnetDocID, err = e.buildMagnetPart(d, l, res)
@@ -104,14 +138,15 @@ func (e *Engine) buildComponents(d *Design, l layout, res *GenerateResult) error
 
 // buildStatorPart creates the "Stator" part the canonical way: a smooth yoke annulus, one
 // real-arc tooth extrude-joined to it, then a circular pattern of the tooth whose count tracks
-// the slots parameter. Every dimension is parameter-driven, so editing a driver recomputes the
-// stator in place. The yoke + teeth fuse into a single iron body.
+// the slots parameter. Every dimension is driven by a parameter LINKED from the Motor assembly,
+// so editing a driver on the assembly recomputes the stator in place. The yoke + teeth fuse into
+// a single iron body.
 func (e *Engine) buildStatorPart(d *Design, l layout, res *GenerateResult) (uint64, error) {
 	id, err := e.createPart("Stator")
 	if err != nil {
 		return 0, err
 	}
-	if res.ParametersSet, err = e.publishParameters(d); err != nil {
+	if err := e.linkAssemblyParameters(statorLinkedParams()); err != nil {
 		return 0, fmt.Errorf("stator parameters: %w", err)
 	}
 	if err := e.buildStatorYoke(); err != nil {
@@ -160,13 +195,13 @@ func (e *Engine) buildToothPattern(d *Design, l layout) error {
 
 // buildRotorPart creates the "Rotor" back-iron annulus from two grounded, radius-dimensioned
 // circles whose role-based radii flip with the topology, so both inrunner and outrunner rotors
-// are literal-free and recompute from the published radii.
-func (e *Engine) buildRotorPart(d *Design, l layout, res *GenerateResult) (uint64, error) {
+// are literal-free and recompute from the radii linked off the assembly.
+func (e *Engine) buildRotorPart(l layout, res *GenerateResult) (uint64, error) {
 	id, err := e.createPart("Rotor")
 	if err != nil {
 		return 0, err
 	}
-	if _, err := e.publishParameters(d); err != nil {
+	if err := e.linkAssemblyParameters(rotorLinkedParams(l)); err != nil {
 		return 0, fmt.Errorf("rotor parameters: %w", err)
 	}
 	sk, err := e.api.Sketch().Create(wire.CreateSketchArgs{Plane: "XY"})
@@ -193,7 +228,7 @@ func (e *Engine) buildMagnetPart(d *Design, l layout, res *GenerateResult) (uint
 	if err != nil {
 		return 0, err
 	}
-	if _, err := e.publishParameters(d); err != nil {
+	if err := e.linkAssemblyParameters(magnetLinkedParams()); err != nil {
 		return 0, fmt.Errorf("magnet parameters: %w", err)
 	}
 	sk, err := e.api.Sketch().Create(wire.CreateSketchArgs{Plane: "XY"})
@@ -261,16 +296,28 @@ func (e *Engine) patternCircular(feature string, count int, countExpr string) er
 	return nil
 }
 
-// assembleMotor creates the "Motor" assembly and places the three component parts coaxially
-// (identity transform — the cross-section already places everything about the origin).
-func (e *Engine) assembleMotor(res *GenerateResult) error {
-	asm, err := e.api.Documents().Create(wire.CreateDocumentArgs{Type: "assembly", Name: "Motor"})
+// linkAssemblyParameters links the named Motor-assembly parameters into the active part as
+// read-only derived parameters (M39 derived-parameter table). It must run while the part is
+// active and the assembly is open; afterwards the part's sketches/features resolve those names
+// against the linked values, which track the assembly. Linking the consumed subset (not the
+// whole program) keeps each part's parameter list to exactly what its geometry dimensions.
+func (e *Engine) linkAssemblyParameters(names []string) error {
+	_, err := e.api.Parameters().AddDerivedTable(wire.DerivedParameterTableAddArgs{
+		SourceDocument: MotorAssemblyName,
+		Linked:         names,
+	})
 	if err != nil {
-		return fmt.Errorf("create motor assembly: %w", err)
+		return fmt.Errorf("link motor parameters %v from %q: %w", names, MotorAssemblyName, err)
 	}
-	res.AssemblyID = asm.ID
-	_ = e.markMotorMember(asm.ID)
-	if _, err := e.api.Documents().Activate(asm.ID); err != nil {
+	return nil
+}
+
+// placeComponents activates the (already-created) Motor assembly and places the three component
+// parts coaxially (identity transform — the cross-section already places everything about the
+// origin). The assembly was created in createMotorAssembly so it could source the parts'
+// parameters; this is the final step that nests the finished parts into it.
+func (e *Engine) placeComponents(res *GenerateResult) error {
+	if _, err := e.api.Documents().Activate(res.AssemblyID); err != nil {
 		return fmt.Errorf("activate motor assembly: %w", err)
 	}
 	for _, p := range []struct {

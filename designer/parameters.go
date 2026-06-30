@@ -93,8 +93,41 @@ func geometryRadii(d *Design) []motorParam {
 // the param engine reads it as the dimensionless multiplier the angle formulas expect.
 func formatFrac(v float64) string { return fmt.Sprintf("%g", v) }
 
-// publishParameters adds the design's parameter program to the active part, idempotently
-// (Set when a parameter already exists, Add otherwise). It returns the count published.
+// The motor sizing program lives ONCE on the Motor assembly (the single source of truth);
+// each component part links only the assembly parameters its own geometry dimensions against,
+// as read-only derived parameters (M39 derived-parameter tables). These three helpers name
+// that consumed subset per part — kept beside geometryRadii so the names stay in lockstep with
+// the role-based radii the builders reference. A part dimensioning a name not in its subset
+// would have nothing to resolve, so each list is the exact closure of one part's sketches +
+// pattern + extrude. The linked values track the assembly: edit a driver there and every part
+// recomputes (true DOF-0, cross-document parametric intent).
+
+// statorLinkedParams are the assembly parameters the Stator dimensions against: the yoke and
+// slot-bottom circle radii, the tooth sector's tip radius and angular span, the slot count its
+// tooth pattern tracks, and the shared stack length.
+func statorLinkedParams() []string {
+	return []string{stackLengthExpr, "stator_yoke_r", "slot_bottom_r", "tooth_tip_r", "tooth_angle", "slots"}
+}
+
+// rotorLinkedParams are the assembly parameters the Rotor back-iron annulus dimensions against:
+// its two role-based boundary radii (which flip with the topology, hence from rotorRadii) plus
+// the shared stack length.
+func rotorLinkedParams(l layout) []string {
+	outer, inner := rotorRadii(l)
+	return []string{stackLengthExpr, outer, inner}
+}
+
+// magnetLinkedParams are the assembly parameters the Magnets dimension against: the magnet
+// sector's back/tip radii and pole-arc span, the pole count its pattern tracks, and the shared
+// stack length.
+func magnetLinkedParams() []string {
+	return []string{stackLengthExpr, "magnet_back_r", "magnet_tip_r", "magnet_arc_deg", "poles"}
+}
+
+// publishParameters adds the design's full parameter program to the active document —
+// the Motor assembly, which owns the sizing program as the single source of truth that the
+// component parts derive from (M39-F03). Idempotent (Set when a parameter already exists, Add
+// otherwise), so a regenerate updates the assembly in place. It returns the count published.
 func (e *Engine) publishParameters(d *Design) (int, error) {
 	existing, err := e.existingParameterNames()
 	if err != nil {

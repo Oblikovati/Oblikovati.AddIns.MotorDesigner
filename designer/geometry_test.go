@@ -128,6 +128,96 @@ func TestGenerateOutrunnerBuildsAssembly(t *testing.T) {
 	}
 }
 
+// sameStringSet reports whether two name slices hold the same set of names (order-independent),
+// so a link assertion does not depend on the order parameters were linked.
+func sameStringSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := make(map[string]int, len(got))
+	for _, g := range got {
+		seen[g]++
+	}
+	for _, w := range want {
+		if seen[w] == 0 {
+			return false
+		}
+		seen[w]--
+	}
+	return true
+}
+
+// TestAssemblyOwnsTheParameterProgramExactlyOnce pins the M39 refactor's central invariant: the
+// design's full sizing program is published ONCE, on the Motor assembly (the single source of
+// truth), not redundantly on each of the three parts as before. ParametersSet reports the
+// assembly's program, and the fake — which records every parameters.add/set — sees exactly the
+// program length, proving the per-part duplication is gone.
+func TestAssemblyOwnsTheParameterProgramExactlyOnce(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	d, err := Compute(DefaultSpec())
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	res, err := e.Generate(DefaultSpec())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	want := len(designParameters(d))
+	if res.ParametersSet != want {
+		t.Errorf("ParametersSet = %d, want %d (the full program on the assembly)", res.ParametersSet, want)
+	}
+	if len(h.params) != want {
+		t.Errorf("published %d parameters, want %d once on the assembly (no per-part duplication)", len(h.params), want)
+	}
+	owned := map[string]bool{}
+	for _, p := range designParameters(d) {
+		owned[p.name] = true
+	}
+	for _, l := range h.derived {
+		for _, n := range l.linked {
+			if !owned[n] {
+				t.Errorf("part (doc %d) linked %q, which the assembly does not own", l.doc, n)
+			}
+		}
+	}
+}
+
+// TestGenerateLinksConsumedAssemblyParametersIntoEachPart proves each component part derives —
+// from the Motor assembly — exactly the parameters its own geometry dimensions against (and no
+// more), so editing a driver on the assembly repropagates to the parts. This is the consumer
+// half of the assembly-owns-parameters refactor (M39 derived-parameter tables).
+func TestGenerateLinksConsumedAssemblyParametersIntoEachPart(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	res, err := e.Generate(DefaultSpec()) // DefaultSpec is an inrunner
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	cases := []struct {
+		part string
+		doc  uint64
+		want []string
+	}{
+		{"Stator", res.StatorDocID, []string{"stack_length", "stator_yoke_r", "slot_bottom_r", "tooth_tip_r", "tooth_angle", "slots"}},
+		{"Rotor", res.RotorDocID, []string{"stack_length", "magnet_back_r", "rotor_yoke_r"}},
+		{"Magnets", res.MagnetDocID, []string{"stack_length", "magnet_back_r", "magnet_tip_r", "magnet_arc_deg", "poles"}},
+	}
+	for _, c := range cases {
+		names, source, ok := h.linkedFrom(c.doc)
+		if !ok {
+			t.Errorf("%s linked no assembly parameters", c.part)
+			continue
+		}
+		if source != MotorAssemblyName {
+			t.Errorf("%s linked from %q, want %q", c.part, source, MotorAssemblyName)
+		}
+		if !sameStringSet(names, c.want) {
+			t.Errorf("%s linked %v, want %v", c.part, names, c.want)
+		}
+	}
+}
+
 func TestPropagatesHostError(t *testing.T) {
 	h := &fakeHost{failOn: wire.MethodDocumentsCreate}
 	e := NewEngine(h)

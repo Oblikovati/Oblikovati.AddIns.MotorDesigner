@@ -29,6 +29,7 @@ type fakeHost struct {
 	entitySeq   uint64                     // running sketch entity-id sequence (AddSketchEntityResult.EntityID)
 	pointSeq    uint64                     // running sketch point-id sequence (AddSketchEntityResult.PointIDs)
 	params      []wire.ParameterSetArgs    // parameters.add/set requests, decoded
+	derived     []derivedLink              // parameters.derivedTables.add requests (which doc linked what)
 	assigned    []string                   // material ids assigned (model.assignMaterial)
 	placed      []string                   // occurrence names placed (assembly.place)
 	statusText  []string                   // status.setText messages, in order
@@ -69,6 +70,8 @@ func (h *fakeHost) dispatch(method string, req []byte) ([]byte, error) {
 		return json.Marshal(wire.ListParametersResult{Parameters: h.existing})
 	case wire.MethodParametersAdd, wire.MethodParametersSet:
 		return h.recordParam(req)
+	case wire.MethodParametersDerivedTablesAdd:
+		return h.recordDerivedTable(req)
 	case wire.MethodSketchCreate:
 		return h.createSketch()
 	case wire.MethodSketchAddEntity:
@@ -167,6 +170,26 @@ func (h *fakeHost) recordDimension(req []byte) ([]byte, error) {
 	}
 	h.dimensions = append(h.dimensions, a)
 	return json.Marshal(wire.AddDimensionResult{Kind: a.Kind, Parameter: a.Expression, DOF: 0})
+}
+
+// derivedLink records one parameters.derivedTables.add: the document that linked (the active
+// doc at the time), the source it linked from, and the parameter names linked — so a test can
+// assert each part derives exactly its consumed subset from the Motor assembly.
+type derivedLink struct {
+	doc    uint64
+	source string
+	linked []string
+}
+
+// recordDerivedTable logs a derived-parameter-table link request against the active document
+// and echoes the linked subset back as the created table (mirroring the host's reply shape).
+func (h *fakeHost) recordDerivedTable(req []byte) ([]byte, error) {
+	var a wire.DerivedParameterTableAddArgs
+	if err := json.Unmarshal(req, &a); err != nil {
+		return nil, err
+	}
+	h.derived = append(h.derived, derivedLink{doc: h.activeDoc, source: a.SourceDocument, linked: a.Linked})
+	return json.Marshal(wire.DerivedParameterTableInfo{ID: len(h.derived), SourceDocument: a.SourceDocument, Linked: a.Linked})
 }
 
 func (h *fakeHost) recordParam(req []byte) ([]byte, error) {
@@ -280,6 +303,22 @@ func (h *fakeHost) paramExpression(name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// linkedFrom returns the parameter names a given document linked, and the source it linked them
+// from, under the lock — collapsing a document's derived-table adds (the motor parts each link
+// once). ok=false means the document linked nothing.
+func (h *fakeHost) linkedFrom(doc uint64) (names []string, source string, ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, l := range h.derived {
+		if l.doc == doc {
+			names = append(names, l.linked...)
+			source = l.source
+			ok = true
+		}
+	}
+	return names, source, ok
 }
 
 // lastStatus returns the most recent status.setText message under the lock ("" if none).
