@@ -64,6 +64,9 @@ func Compute(s Spec) (*Design, error) {
 	d.sizeElectricLoading(s)
 	d.sizeSlots(s)
 	d.sizeRotor(s)
+	if err := validateToothGeometry(d); err != nil {
+		return nil, err
+	}
 	return d, nil
 }
 
