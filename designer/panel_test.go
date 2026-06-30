@@ -192,6 +192,47 @@ func TestNotifyHeadlessGenerateOutrunnerForcesTopology(t *testing.T) {
 	}
 }
 
+// TestHeadlessSlotTypeCommandsSelectProfile pins that each headless slot-profile command builds
+// the matching tooth: the body dimension switches (tooth_width for the parallel/open profiles vs
+// tooth_angle for the radial round-bottom), and the shoe dimension (tip_chord) is present only for
+// the semi-closed profiles, absent for the open-rectangular slot.
+func TestHeadlessSlotTypeCommandsSelectProfile(t *testing.T) {
+	cases := []struct {
+		cmd     string
+		present []string
+		absent  []string
+	}{
+		{GenerateOpenRectCommandID, []string{"tooth_width"}, []string{"tip_chord", "tooth_angle"}},
+		{GenerateParallelToothCommandID, []string{"tooth_width", "neck_r", "tip_chord"}, []string{"tooth_angle"}},
+		{GenerateRoundBottomCommandID, []string{"tooth_angle", "neck_r", "tip_chord"}, []string{"tooth_width"}},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.cmd, func(t *testing.T) {
+			h := &fakeHost{}
+			NewEngine(h).Notify(commandStartedEvent(c.cmd))
+			if !h.waitForDocs(4) {
+				t.Fatalf("headless %s did not complete; docs=%d", c.cmd, h.docCount())
+			}
+			waitForStatus(h)
+			dimExprs := map[string]bool{}
+			for _, d := range h.dimensions {
+				dimExprs[d.Expression] = true
+			}
+			for _, want := range c.present {
+				if !dimExprs[want] {
+					t.Errorf("%s: no tooth dimension references %q; got %v", c.cmd, want, dimExprs)
+				}
+			}
+			for _, no := range c.absent {
+				if dimExprs[no] {
+					t.Errorf("%s: unexpected dimension %q for this profile", c.cmd, no)
+				}
+			}
+		})
+	}
+}
+
 // commandStartedEvent builds the host's command.started event payload for a command id.
 func commandStartedEvent(id string) []byte {
 	return []byte(`{"type":"` + wire.EventCommandStarted + `","command":"` + id + `"}`)
