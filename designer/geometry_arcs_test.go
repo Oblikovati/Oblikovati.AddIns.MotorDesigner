@@ -62,8 +62,10 @@ func TestGenerateDrivesArcRadiiAndSpanFromParameters(t *testing.T) {
 	for _, d := range h.dimensions {
 		dimExprs[d.Expression] = true
 	}
-	// The angular span is driven by the full-span angle dimension between the flanks.
-	for _, want := range []string{"tooth_tip_r", "slot_bottom_r", "magnet_tip_r", "magnet_back_r", "magnet_arc_deg", "tooth_angle"} {
+	// The default (parallel-tooth) stator tooth is driven by the tip/root radii, the constant
+	// tooth width, the shoe neck radius and the tip-chord span; the magnet by its radii + arc.
+	for _, want := range []string{"tooth_tip_r", "slot_bottom_r", "tooth_width", "neck_r", "tip_chord",
+		"magnet_tip_r", "magnet_back_r", "magnet_arc_deg"} {
 		if !dimExprs[want] {
 			t.Errorf("no driving dimension references %q; got %v", want, dimExprs)
 		}

@@ -60,7 +60,46 @@ func designParameters(d *Design) []motorParam {
 		{"tooth_angle", "tooth_width / slot_pitch * 360 deg / slots"},
 		{"pole_pitch_angle", "360 deg / poles"},
 	}
-	return append(base, geometryRadii(d)...)
+	base = append(base, geometryRadii(d)...)
+	return append(base, slotProfileParams(d)...)
+}
+
+// slotProfileParams are the semi-closed-slot shoe dimensions the parallel-tooth and
+// round-bottom stator-tooth profiles dimension against. They depend on the role-based radii
+// (geometryRadii) and the slot-pitch angle, so they are appended LAST. Each is a formula of
+// the drivers (slot_opening, tooth_tip_height, tooth_tip_r, slots), with the degeneracy
+// guards baked in as min/max clamps so a live driver edit can never drive the shoe
+// inside-out (advisor pitfalls 1–4): shoe_half_angle stays positive, neck_r stays strictly
+// between the tip and the root. The neck offset sign flips with the motor type — the neck
+// sits toward the ROOT, which is at a larger radius for an inrunner and a smaller one for an
+// outrunner.
+func slotProfileParams(d *Design) []motorParam {
+	base := []motorParam{
+		// Independent shoe inputs (literals carried in mm).
+		{"slot_opening", fmt.Sprintf("%.4f mm", d.Spec.slotOpeningMM())},
+		{"tooth_tip_height", fmt.Sprintf("%.4f mm", d.Spec.toothTipHeightMM())},
+
+		// Shoe half-angle at the airgap: half the slot pitch minus the half-opening it leaves
+		// between adjacent shoes (exact, chord-based via asin). Clamped > 0 so an over-wide
+		// slot_opening can never invert the shoe.
+		{"shoe_half_angle", "max(slot_pitch_angle / 2 - asin((slot_opening / 2) / tooth_tip_r), 1 deg)"},
+		// Tip-arc chord spanning ±shoe_half_angle — encodes the shoe span as a pure length so
+		// the tip corners need only a point-distance dimension (no construction radial).
+		{"tip_chord", "2 * tooth_tip_r * sin(shoe_half_angle)"},
+	}
+	return append(base, motorParam{"neck_r", neckRadiusExpr(d)})
+}
+
+// neckRadiusExpr is the radius where the shoe underside meets the parallel/radial tooth body,
+// offset from the tooth tip toward the root by tooth_tip_height — clamped to 90% of the
+// tip→root span so the neck stays strictly between them (never crosses the root). The sign
+// flips with the motor type because the root is outward of the tip for an inrunner and inward
+// for an outrunner.
+func neckRadiusExpr(d *Design) string {
+	if d.Spec.normType() == Outrunner {
+		return "tooth_tip_r - min(tooth_tip_height, 0.9 * (tooth_tip_r - stator_yoke_r))"
+	}
+	return "tooth_tip_r + min(tooth_tip_height, 0.9 * (slot_bottom_r - tooth_tip_r))"
 }
 
 // geometryRadii are the role-based boundary radii the tooth/magnet/circle builders
@@ -102,11 +141,41 @@ func formatFrac(v float64) string { return fmt.Sprintf("%g", v) }
 // pattern + extrude. The linked values track the assembly: edit a driver there and every part
 // recomputes (true DOF-0, cross-document parametric intent).
 
-// statorLinkedParams are the assembly parameters the Stator dimensions against: the yoke and
-// slot-bottom circle radii, the tooth sector's tip radius and angular span, the slot count its
-// tooth pattern tracks, and the shared stack length.
-func statorLinkedParams() []string {
-	return []string{stackLengthExpr, "stator_yoke_r", "slot_bottom_r", "tooth_tip_r", "tooth_angle", "slots"}
+// statorLinkedParams are the assembly parameters the Stator dimensions against. The yoke
+// annulus always needs both yoke-boundary radii (stator_yoke_r, slot_bottom_r — one is the
+// tooth root, which flips with the motor type) plus the slot count its tooth pattern tracks
+// and the shared stack length. The TOOTH adds the names its selected slot profile dimensions
+// against (slotProfileLinkedParams), kept to exactly that closure so each part links only
+// what its geometry resolves.
+func statorLinkedParams(d *Design) []string {
+	base := []string{stackLengthExpr, "stator_yoke_r", "slot_bottom_r", "tooth_tip_r", "slots"}
+	return append(base, slotProfileLinkedParams(d)...)
+}
+
+// slotProfileLinkedParams names the tooth-profile parameters the active slot type dimensions
+// against: open-rectangular and parallel-tooth size their constant-width body by tooth_width;
+// round-bottom sizes its radial body by tooth_angle. The two shoe profiles additionally need
+// the neck radius and the tip-chord span. The tooth root radius is already covered by the
+// yoke radii in statorLinkedParams (slot_bottom_r inrunner / stator_yoke_r outrunner).
+func slotProfileLinkedParams(d *Design) []string {
+	switch d.Spec.normSlotType() {
+	case SlotOpenRectangular:
+		return []string{"tooth_width"}
+	case SlotRoundBottom:
+		return []string{"tooth_angle", "neck_r", "tip_chord"}
+	default: // SlotParallelTooth
+		return []string{"tooth_width", "neck_r", "tip_chord"}
+	}
+}
+
+// toothRootParam is the radius parameter the tooth root arc dimensions against: the slot
+// bottom for an inrunner, but the yoke INNER radius for an outrunner so the tooth overlaps
+// the whole yoke ring and the boolean join fuses to one shell (see the outrunner stator fix).
+func toothRootParam(l layout) string {
+	if l.teethFaceOut {
+		return "stator_yoke_r"
+	}
+	return "slot_bottom_r"
 }
 
 // rotorLinkedParams are the assembly parameters the Rotor back-iron annulus dimensions against:

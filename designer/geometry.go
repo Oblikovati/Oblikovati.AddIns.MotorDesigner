@@ -103,6 +103,27 @@ func (e *Engine) Generate(s Spec) (*GenerateResult, error) {
 	return res, e.saveSpec(res.AssemblyID, s)
 }
 
+// disableInference turns OFF auto-constraint inference for the session and returns the prior
+// options to restore. Best-effort: a nil return means the host could not report them (an older
+// host), in which case the build proceeds with inference on (and relies on seeds not tripping it).
+func (e *Engine) disableInference() *wire.InferenceOptionsView {
+	prior, err := e.api.Sketch().InferenceOptions()
+	if err != nil {
+		return nil
+	}
+	_, _ = e.api.Sketch().SetInferenceOptions(wire.InferenceOptionsView{InferEnabled: false, ConstrainEnabled: false})
+	return &prior
+}
+
+// restoreInference puts the user's inference options back after a build (no-op if they could
+// not be read).
+func (e *Engine) restoreInference(prior *wire.InferenceOptionsView) {
+	if prior == nil {
+		return
+	}
+	_, _ = e.api.Sketch().SetInferenceOptions(*prior)
+}
+
 // createMotorAssembly creates the Motor assembly, activates it, marks it a motor member, and
 // publishes the full sizing parameter program onto it — the single source of truth the parts
 // derive from (M39-F03 makes the assembly a first-class parameter holder). It must run before
@@ -146,7 +167,7 @@ func (e *Engine) buildStatorPart(d *Design, l layout, res *GenerateResult) (uint
 	if err != nil {
 		return 0, err
 	}
-	if err := e.linkAssemblyParameters(statorLinkedParams()); err != nil {
+	if err := e.linkAssemblyParameters(statorLinkedParams(d)); err != nil {
 		return 0, fmt.Errorf("stator parameters: %w", err)
 	}
 	if err := e.buildStatorYoke(l); err != nil {
@@ -194,19 +215,103 @@ func (e *Engine) buildStatorYoke(l layout) error {
 
 // buildToothPattern extrude-joins one real-arc tooth to the yoke and circular-patterns it
 // across the slots, so the toothed bore is real arcs (not segments) and re-patterns when the
-// slots parameter changes.
+// slots parameter changes. The tooth's 2D profile is the one selected by Spec.SlotType, so the
+// extruded 3D tooth carries the real slot shape that every multiphysics consumer meshes.
 func (e *Engine) buildToothPattern(d *Design, l layout) error {
 	sk, err := e.api.Sketch().Create(wire.CreateSketchArgs{Plane: "XY"})
 	if err != nil {
 		return fmt.Errorf("tooth sketch: %w", err)
 	}
-	if err := e.addAnnularSector(sk.SketchIndex, toothSector(l, d)); err != nil {
+	// The tooth is the one sketch with straight flanks/undersides, so it is the only one auto-
+	// constraint inference can touch. The designer constrains it explicitly to DOF=0, so an
+	// inferred constraint can only over-constrain — it snapped a spurious perpendicular between
+	// two shoe undersides seeded ~90° apart, leaving the inrunner parallel-tooth profile open.
+	// Disable inference just for this sketch (set in the active-part context so a per-document
+	// reset can't wipe it), restoring the user's setting afterward.
+	defer e.restoreInference(e.disableInference())
+	if err := e.addToothProfile(sk.SketchIndex, d, l); err != nil {
 		return fmt.Errorf("tooth profile: %w", err)
 	}
 	if _, err := e.extrudeNamed(sk.SketchIndex, "join", "Tooth"); err != nil {
 		return fmt.Errorf("tooth extrude: %w", err)
 	}
 	return e.patternCircular("Tooth", d.Spec.Slots, "slots")
+}
+
+// addToothProfile lays the stator tooth sketch for the design's selected slot type: an
+// open-rectangular (parallel, no shoe), a parallel-tooth (parallel body + shoe), or a
+// round-bottom (radial body + shoe). Each is fully constrained (DOF=0) and driven by the
+// linked assembly parameters, and each works for both motor types via the role-based seeds and
+// param names (the outrunner tooth root reaches stator_yoke_r so the join fuses to one shell).
+func (e *Engine) addToothProfile(sk int, d *Design, l layout) error {
+	switch d.Spec.normSlotType() {
+	case SlotOpenRectangular:
+		return e.addOpenRectTooth(sk, openRectToothSpec(l, d))
+	case SlotRoundBottom:
+		return e.addShoeTooth(sk, shoeToothSpec(l, d, true))
+	default: // SlotParallelTooth
+		return e.addShoeTooth(sk, shoeToothSpec(l, d, false))
+	}
+}
+
+// toothRootR is the cm seed radius of the tooth root arc: the slot bottom for an inrunner, but
+// the yoke INNER radius for an outrunner so the tooth overlaps the whole yoke ring and the
+// boolean join fuses to one shell (mirrors toothRootParam, which names the same radius).
+func toothRootR(l layout) float64 {
+	if l.teethFaceOut {
+		return l.statorYokeR
+	}
+	return l.slotBottomR
+}
+
+// openRectToothSpec builds the open-rectangular tooth spec for the layout, ordering the two
+// arcs by radius (inner = smaller) so the profile winds correctly for both motor types and
+// matching each arc to its driving parameter name.
+func openRectToothSpec(l layout, d *Design) openRectTooth {
+	tip, root := l.toothTipR, toothRootR(l)
+	hw := mmToCM(d.ToothWidth) / 2
+	if tip <= root { // inrunner: tip at the bore is the inner (smaller-radius) arc
+		return openRectTooth{rInnerSeed: tip, rOuterSeed: root, halfWidthSeed: hw,
+			rInnerParam: "tooth_tip_r", rOuterParam: toothRootParam(l), widthParam: "tooth_width"}
+	}
+	return openRectTooth{rInnerSeed: root, rOuterSeed: tip, halfWidthSeed: hw,
+		rInnerParam: toothRootParam(l), rOuterParam: "tooth_tip_r", widthParam: "tooth_width"}
+}
+
+// shoeToothSpec builds the semi-closed (parallel-tooth / round-bottom) tooth spec: the tip,
+// root and neck seed radii (neck offset from the tip toward the root, clamped to 90% of the
+// tip→root span), the shoe and body half-angle seeds, and the driving parameter names.
+func shoeToothSpec(l layout, d *Design, radial bool) shoeTooth {
+	tip, root := l.toothTipR, toothRootR(l)
+	dir := math.Copysign(1, root-tip)
+	tipH := mmToCM(d.Spec.toothTipHeightMM())
+	neck := tip + dir*math.Min(tipH, 0.9*math.Abs(root-tip))
+	opening := mmToCM(d.Spec.slotOpeningMM())
+	slotPitch := 2 * math.Pi / float64(d.Spec.Slots)
+	shoeHalf := math.Max(slotPitch/2-math.Asin(math.Min(1, opening/(2*tip))), math.Pi/180)
+	return shoeTooth{
+		radial:        radial,
+		tipSeed:       tip,
+		rootSeed:      root,
+		neckSeed:      neck,
+		bodyHalfSeed:  l.toothFrac * math.Pi / float64(d.Spec.Slots),
+		shoeHalfSeed:  shoeHalf,
+		halfWidthSeed: mmToCM(d.ToothWidth) / 2,
+		tipParam:      "tooth_tip_r",
+		rootParam:     toothRootParam(l),
+		neckParam:     "neck_r",
+		tipChordParam: "tip_chord",
+		bodyParam:     bodyParamName(radial),
+	}
+}
+
+// bodyParamName is the body-size parameter for a slot profile: a constant angle for a radial
+// (round-bottom) body, a constant width for a parallel body.
+func bodyParamName(radial bool) string {
+	if radial {
+		return "tooth_angle"
+	}
+	return "tooth_width"
 }
 
 // buildRotorPart creates the "Rotor" back-iron annulus from two grounded, radius-dimensioned
@@ -272,33 +377,6 @@ func rotorRadii(l layout) (outerParam, innerParam string) {
 		return "rotor_yoke_r", "magnet_tip_r"
 	}
 	return "magnet_back_r", "rotor_yoke_r"
-}
-
-// toothSector specs one stator tooth as an annular sector between the slot bottom (where it fuses
-// to the yoke) and the tooth tip (at the airgap), spanning the tooth's angular share of a slot
-// pitch (toothFrac · π / slots half-angle). The sector's inner/outer arcs are ordered by RADIUS,
-// not by role, so the profile winds correctly and its inner arc lands ON the yoke for both motor
-// types: the tooth tip is the SMALL radius for an inrunner (teeth point inward to the bore) but the
-// LARGE radius for an outrunner (teeth point outward to the airgap). Passing tooth_tip_r as the
-// inner arc unconditionally (as before) inverted the outrunner tooth so it floated off the yoke.
-func toothSector(l layout, d *Design) sector {
-	half := l.toothFrac * math.Pi / float64(d.Spec.Slots)
-	if l.teethFaceOut { // outrunner: tooth tip (airgap) is the outer arc
-		// The root reaches the yoke's INNER radius (stator_yoke_r), not the slot bottom, so the tooth
-		// OVERLAPS the whole yoke ring instead of merely touching its outer edge. A tangent contact
-		// (zero volume overlap) does not fuse reliably at the smaller outrunner radius — the union
-		// left the teeth as separate shells (13-shell body) — whereas a real overlap fuses robustly
-		// into one shell. The buried overlap is inside the solid yoke, so the visible slot (from the
-		// yoke's outer edge to the tip) is unchanged.
-		return sector{
-			rInnerSeed: l.statorYokeR, rOuterSeed: l.toothTipR, halfSeed: half,
-			rInnerParam: "stator_yoke_r", rOuterParam: "tooth_tip_r", spanParam: "tooth_angle",
-		}
-	}
-	return sector{ // inrunner: tooth tip at the bore is the inner arc, slot bottom the outer
-		rInnerSeed: l.toothTipR, rOuterSeed: l.slotBottomR, halfSeed: half,
-		rInnerParam: "tooth_tip_r", rOuterParam: "slot_bottom_r", spanParam: "tooth_angle",
-	}
 }
 
 // magnetSector specs one magnet as an annular sector between its back and tip radii, spanning

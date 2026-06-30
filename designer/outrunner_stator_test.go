@@ -37,33 +37,80 @@ func TestStatorYokeRadiiOuterFirst(t *testing.T) {
 	}
 }
 
-// TestOutrunnerToothOverlapsYoke pins the fusion fix: the outrunner tooth root must reach the
-// yoke's INNER radius so the tooth OVERLAPS the yoke ring (real volume), not merely touch its outer
-// edge — a tangent contact did not fuse and left the teeth as 12 disconnected shells. The sector
-// must also stay valid (inner radius < outer radius).
-func TestOutrunnerToothOverlapsYoke(t *testing.T) {
-	l, d := layoutFor(t, Outrunner)
-	s := toothSector(l, d)
-	if s.rInnerParam != "stator_yoke_r" || s.rOuterParam != "tooth_tip_r" {
-		t.Errorf("outrunner tooth params = (%q,%q), want (stator_yoke_r, tooth_tip_r)", s.rInnerParam, s.rOuterParam)
+// TestOutrunnerToothRootReachesYoke pins the fusion invariant across ALL slot types: the
+// outrunner tooth root must dimension against the yoke's INNER radius (stator_yoke_r) and seed
+// AT that radius, so the tooth overlaps the whole yoke ring (real volume) and the boolean join
+// fuses to one shell — a tangent contact did not fuse and left the teeth as disconnected shells.
+func TestOutrunnerToothRootReachesYoke(t *testing.T) {
+	l, _ := layoutFor(t, Outrunner)
+	if got := toothRootParam(l); got != "stator_yoke_r" {
+		t.Errorf("outrunner tooth root param = %q, want stator_yoke_r", got)
 	}
-	if s.rInnerSeed >= s.rOuterSeed {
-		t.Errorf("outrunner tooth inverted: rInner %.3f must be < rOuter %.3f", s.rInnerSeed, s.rOuterSeed)
+	if got := toothRootR(l); got != l.statorYokeR {
+		t.Errorf("outrunner tooth root seed = %.3f, want the yoke inner %.3f", got, l.statorYokeR)
 	}
-	if s.rInnerSeed > l.statorYokeR+1e-9 {
-		t.Errorf("outrunner tooth root %.3f must reach the yoke inner %.3f to overlap (else teeth float)", s.rInnerSeed, l.statorYokeR)
+	// The tip (airgap) must be the LARGER radius for an outrunner.
+	if l.toothTipR <= l.statorYokeR {
+		t.Errorf("outrunner tip %.3f must exceed the yoke inner %.3f", l.toothTipR, l.statorYokeR)
 	}
 }
 
-// TestInrunnerToothUnchanged guards against a regression to the inrunner tooth, which already fused
-// correctly (tip at the bore = inner arc, slot bottom = outer arc) and must not change.
-func TestInrunnerToothUnchanged(t *testing.T) {
-	l, d := layoutFor(t, Inrunner)
-	s := toothSector(l, d)
-	if s.rInnerParam != "tooth_tip_r" || s.rOuterParam != "slot_bottom_r" {
-		t.Errorf("inrunner tooth params = (%q,%q), want (tooth_tip_r, slot_bottom_r)", s.rInnerParam, s.rOuterParam)
+// TestInrunnerToothRootIsSlotBottom guards the inrunner tooth root: it dimensions against the
+// slot bottom (the larger radius), where it meets the yoke.
+func TestInrunnerToothRootIsSlotBottom(t *testing.T) {
+	l, _ := layoutFor(t, Inrunner)
+	if got := toothRootParam(l); got != "slot_bottom_r" {
+		t.Errorf("inrunner tooth root param = %q, want slot_bottom_r", got)
 	}
-	if s.rInnerSeed >= s.rOuterSeed {
-		t.Errorf("inrunner tooth inverted: rInner %.3f must be < rOuter %.3f", s.rInnerSeed, s.rOuterSeed)
+	if l.slotBottomR <= l.toothTipR {
+		t.Errorf("inrunner slot bottom %.3f must exceed the tip %.3f", l.slotBottomR, l.toothTipR)
 	}
+}
+
+// TestOpenRectToothOrdersArcsByRadius pins the winding invariant: the open-rect tooth's inner
+// arc is always the smaller radius and its outer the larger, for both motor types, with the
+// driving param names matching the seeds.
+func TestOpenRectToothOrdersArcsByRadius(t *testing.T) {
+	for _, typ := range []MotorType{Inrunner, Outrunner} {
+		l, d := layoutFor(t, typ)
+		s := openRectToothSpec(l, d)
+		if s.rInnerSeed >= s.rOuterSeed {
+			t.Errorf("%v open-rect inverted: rInner %.3f must be < rOuter %.3f", typ, s.rInnerSeed, s.rOuterSeed)
+		}
+		if s.widthParam != "tooth_width" {
+			t.Errorf("%v open-rect width param = %q, want tooth_width", typ, s.widthParam)
+		}
+	}
+}
+
+// TestShoeToothNeckBetweenTipAndRoot pins the shoe neck-radius guard: the neck must sit
+// strictly between the tip and the root for both motor types, so the shoe never crosses the
+// root (advisor pitfall 4). It also confirms the body parameter switches with the profile.
+func TestShoeToothNeckBetweenTipAndRoot(t *testing.T) {
+	for _, typ := range []MotorType{Inrunner, Outrunner} {
+		l, d := layoutFor(t, typ)
+		for _, radial := range []bool{false, true} {
+			s := shoeToothSpec(l, d, radial)
+			lo, hi := minMax(s.tipSeed, s.rootSeed)
+			if s.neckSeed <= lo || s.neckSeed >= hi {
+				t.Errorf("%v radial=%v neck %.3f not strictly between tip %.3f and root %.3f",
+					typ, radial, s.neckSeed, s.tipSeed, s.rootSeed)
+			}
+			want := "tooth_width"
+			if radial {
+				want = "tooth_angle"
+			}
+			if s.bodyParam != want {
+				t.Errorf("%v radial=%v body param = %q, want %q", typ, radial, s.bodyParam, want)
+			}
+		}
+	}
+}
+
+// minMax returns its two arguments in ascending order.
+func minMax(a, b float64) (lo, hi float64) {
+	if a <= b {
+		return a, b
+	}
+	return b, a
 }
