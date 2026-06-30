@@ -207,7 +207,6 @@ func TestHeadlessSlotTypeCommandsSelectProfile(t *testing.T) {
 		{GenerateRoundBottomCommandID, []string{"tooth_angle", "neck_r", "tip_chord"}, []string{"tooth_width"}},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.cmd, func(t *testing.T) {
 			h := &fakeHost{}
 			NewEngine(h).Notify(commandStartedEvent(c.cmd))
