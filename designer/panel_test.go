@@ -132,31 +132,69 @@ func TestNotifyPanelEditUpdatesSpec(t *testing.T) {
 	}
 }
 
-// TestRegisterCommandsCreatesSingleShowButtonWithIcon pins the ribbon surface: exactly ONE
-// command — the "Motor Designer" show button — carrying an SVG glyph and a large-icon style. The
-// old per-action "Generate Motor" / "Generate Outrunner" buttons are gone.
-func TestRegisterCommandsCreatesSingleShowButtonWithIcon(t *testing.T) {
+// TestRegisterCommandsRibbonButtonPlusHeadlessGenerate pins the command surface: exactly ONE
+// ribbon button — the "Motor Designer" show button, carrying an SVG glyph and a large-icon
+// style — plus the two HEADLESS generation commands (no icon, no button style, so they stay off
+// the ribbon) that let a script/MCP driver generate via execute_command.
+func TestRegisterCommandsRibbonButtonPlusHeadlessGenerate(t *testing.T) {
 	h := &fakeHost{}
 	e := NewEngine(h)
 	if err := e.RegisterCommands(); err != nil {
 		t.Fatalf("RegisterCommands: %v", err)
 	}
-	if len(h.commands) != 1 {
-		t.Fatalf("registered %d commands, want exactly 1 (the show button); got %+v", len(h.commands), h.commands)
+	byID := map[string]wire.CreateCommandArgs{}
+	for _, c := range h.commands {
+		byID[c.ID] = c
 	}
-	c := h.commands[0]
-	if c.ID != ShowCommandID {
-		t.Errorf("command id = %q, want %q", c.ID, ShowCommandID)
+	show, ok := byID[ShowCommandID]
+	if !ok || show.DisplayName != "Motor Designer" || show.ButtonStyle != types.LargeIconButton {
+		t.Fatalf("show button missing/misconfigured: %+v", show)
 	}
-	if c.DisplayName != "Motor Designer" {
-		t.Errorf("display name = %q, want \"Motor Designer\"", c.DisplayName)
+	if !strings.Contains(show.IconSVG, "<svg") || !strings.Contains(show.IconSVG, "viewBox=\"0 0 24 24\"") {
+		t.Errorf("show button must ship a 24×24 SVG glyph, got IconSVG=%q", show.IconSVG)
 	}
-	if !strings.Contains(c.IconSVG, "<svg") || !strings.Contains(c.IconSVG, "viewBox=\"0 0 24 24\"") {
-		t.Errorf("command must ship a 24×24 SVG glyph, got IconSVG=%q", c.IconSVG)
+	// The two headless generate commands are registered for execute_command but carry no ribbon
+	// styling — the ribbon stays a single button.
+	for _, id := range []string{GenerateCommandID, GenerateOutrunnerCommandID} {
+		gen, ok := byID[id]
+		if !ok {
+			t.Fatalf("headless command %q was not registered", id)
+		}
+		if gen.IconSVG != "" || gen.ButtonStyle == types.LargeIconButton {
+			t.Errorf("headless command %q must not be a ribbon button: %+v", id, gen)
+		}
 	}
-	if c.ButtonStyle != types.LargeIconButton {
-		t.Errorf("button style = %v, want LargeIconButton", c.ButtonStyle)
+}
+
+// TestNotifyHeadlessGenerateCommandTriggersGeneration pins the scriptable/MCP path: a
+// command.started for MotorDesigner.Generate (no panel interaction) runs a full generation.
+func TestNotifyHeadlessGenerateCommandTriggersGeneration(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	e.Notify(commandStartedEvent(GenerateCommandID))
+	if !h.waitForDocs(4) {
+		t.Fatalf("headless Generate command should have built the assembly; docs=%d", h.docCount())
 	}
+}
+
+// TestNotifyHeadlessGenerateOutrunnerForcesTopology pins that MotorDesigner.GenerateOutrunner
+// generates the outrunner topology regardless of the current spec, mirroring the dropdown.
+func TestNotifyHeadlessGenerateOutrunnerForcesTopology(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+	e.Notify(commandStartedEvent(GenerateOutrunnerCommandID))
+	if !h.waitForDocs(4) {
+		t.Fatalf("headless GenerateOutrunner did not complete; docs=%d", h.docCount())
+	}
+	waitForStatus(h)
+	if expr, ok := h.paramExpression("slot_bottom_r"); !ok || expr != "bore_r - slot_depth" {
+		t.Errorf("slot_bottom_r = %q (ok=%v), want outrunner formula \"bore_r - slot_depth\"", expr, ok)
+	}
+}
+
+// commandStartedEvent builds the host's command.started event payload for a command id.
+func commandStartedEvent(id string) []byte {
+	return []byte(`{"type":"` + wire.EventCommandStarted + `","command":"` + id + `"}`)
 }
 
 // TestNotifyGenerateRespectsTypeDropdown is the regression for the reported bug: choosing
