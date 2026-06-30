@@ -199,7 +199,7 @@ func TestGenerateLinksConsumedAssemblyParametersIntoEachPart(t *testing.T) {
 		doc  uint64
 		want []string
 	}{
-		{"Stator", res.StatorDocID, []string{"stack_length", "stator_yoke_r", "slot_bottom_r", "tooth_tip_r", "tooth_angle", "slots"}},
+		{"Stator", res.StatorDocID, []string{"stack_length", "stator_yoke_r", "slot_bottom_r", "tooth_tip_r", "slots", "tooth_width", "neck_r", "tip_chord"}},
 		{"Rotor", res.RotorDocID, []string{"stack_length", "magnet_back_r", "rotor_yoke_r"}},
 		{"Magnets", res.MagnetDocID, []string{"stack_length", "magnet_back_r", "magnet_tip_r", "magnet_arc_deg", "poles"}},
 	}
