@@ -17,11 +17,11 @@
 // replace); CI injects the equivalent replaces via .github/actions/siblings.
 module oblikovati.org/motor-designer
 
-go 1.24.0
+go 1.27.0
 
 require (
 	oblikovati.org v0.0.0-00010101000000-000000000000
-	oblikovati.org/api v0.144.0
+	oblikovati.org/api v0.153.1
 )
 
 require (
