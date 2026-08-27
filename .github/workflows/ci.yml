@@ -32,7 +32,12 @@ jobs:
       - uses: ./.github/actions/siblings
       - uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
-          version: v2.1.0
+          # v2.1.0 panics under Go 1.27 (honnef.co/go/tools IR builder can't read the
+          # go1.27 gc export data / new AST shapes); v2.13.1 is the first upstream
+          # release actually built with go1.27.0 (matches the GPL Oblikovati repo's
+          # GOLANGCI_VERSION pin). Bisected v2.1.0..v2.13.1 locally: v2.13.0 already
+          # ran clean too, but v2.13.1 is the version this workspace has standardized on.
+          version: v2.13.1
 
   # SPDX: every Go file in this GPL repo must carry GPL-2.0-only.
   spdx:
@@ -59,9 +64,13 @@ jobs:
           go-version-file: go.mod
           cache: false
       - uses: ./.github/actions/siblings
-      - run: go install gotest.tools/gotestsum@v1.12.0
+      # gotestsum comes from this module's `tool` directive, so its version is pinned by
+      # go.mod/go.sum rather than resolved at install time. A separate `go install
+      # gotest.tools/gotestsum@v1.12.0` step used to fail under Go 1.27: v1.12.0 drags in
+      # golang.org/x/tools@v0.19.0, which fails to compile under 1.27's stricter constant
+      # checks (invalid array length -delta * delta).
       - name: Test
-        run: gotestsum --junitfile test-results-${{ matrix.os }}.xml -- -coverprofile=coverage.out -covermode=count ./designer/... ./gplpurity/...
+        run: go tool gotestsum --junitfile test-results-${{ matrix.os }}.xml -- -coverprofile=coverage.out -covermode=count ./designer/... ./gplpurity/...
       - uses: actions/upload-artifact@v6
         if: always()
         with:
