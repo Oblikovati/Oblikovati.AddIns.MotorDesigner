@@ -1,6 +1,6 @@
 # Resolve the add-in's cross-repo deps for CI/build (ADR-0018): check out the Apache-2.0
 # contract oblikovati.org/api (by default at the version pinned in go.mod — the latest
-# PUBLISHED release the add-in tracks) and the GPL host oblikovati.org (at develop, used
+# PUBLISHED release the add-in tracks) and the GPL host oblikovati.org (at go-legacy, used
 # only by the designer<->host integration tests), inject the equivalent `replace`s the
 # committed go.mod omits, and vendor the C ABI header cgo builds include.
 #
@@ -48,13 +48,21 @@ runs:
     - uses: actions/checkout@v5
       with:
         repository: Oblikovati/Oblikovati
-        ref: develop
+        ref: go-legacy
         path: _app
 
     - shell: bash
       run: |
         set -euo pipefail
-        go mod edit -replace oblikovati.org/api="$GITHUB_WORKSPACE/_api"
+        api_module_dir="$GITHUB_WORKSPACE/_api"
+        if [ -f "$api_module_dir/go/go.mod" ]; then
+          api_module_dir="$api_module_dir/go"
+        fi
+        if [ ! -f "$api_module_dir/go.mod" ]; then
+          echo "siblings: expected Go module at $api_module_dir or $api_module_dir/go" >&2
+          exit 1
+        fi
+        go mod edit -replace oblikovati.org/api="$api_module_dir"
         go mod edit -replace oblikovati.org="$GITHUB_WORKSPACE/_app"
         # Vendor the C ABI header so cgo builds can -I include/ (harmless for non-cgo jobs).
         api_dir=$(go list -m -f '{{.Dir}}' oblikovati.org/api)
