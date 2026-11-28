@@ -118,3 +118,25 @@ jobs:
         with:
           name: oblikovati-motor-designer-${{ matrix.os }}
           path: build/oblikovati-motor-designer.*
+
+  build-wasm:
+    runs-on: ubuntu-latest
+    env:
+      GOOS: js
+      GOARCH: wasm
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/siblings
+      - name: Build js-wasm add-in
+        run: |
+          mkdir -p build
+          go build -o build/oblikovati-motor-designer.wasm .
+      - uses: actions/upload-artifact@v6
+        with:
+          name: oblikovati-motor-designer-js-wasm
+          path: build/oblikovati-motor-designer.wasm

@@ -27,7 +27,7 @@ ADDINS_DIR ?= ../Oblikovati/head/addins
 # with `go list -m` works both under go.work (local dev) and the CI -replace.
 HDR := include/oblikovati_addin.h
 
-.PHONY: build install test clean sync-header
+.PHONY: build build-wasm install test clean sync-header
 
 sync-header: $(HDR) ## Vendor the C ABI header from the oblikovati.org/api module
 $(HDR):
@@ -39,6 +39,10 @@ $(HDR):
 build: sync-header ## Build the c-shared add-in into $(OUT)/
 	mkdir -p $(OUT)
 	go build -buildmode=c-shared -o $(OUT)/$(LIB) .
+
+build-wasm: ## Build the browser WebAssembly (js-wasm) add-in into $(OUT)/
+	mkdir -p $(OUT)
+	GOOS=js GOARCH=wasm CGO_ENABLED=0 go build -o $(OUT)/oblikovati-motor-designer.wasm .
 
 install: build ## Build then copy the library + manifest into $(ADDINS_DIR)
 	mkdir -p $(ADDINS_DIR)
